@@ -58,3 +58,7 @@ n8n-manager llm-proxy status
 Destructive operations are supported only when they are explicit and guarded. For example, deleting managed runtime data requires `--destroy-data --force`; provider-specific Docker volume removal is still a wiring step, so the current implementation acknowledges the intent without silently deleting volumes.
 
 When `N8N_HOST` and `N8N_API_KEY` are set, or when `--url` and `--api-key` are passed, credential setup uses the n8n REST API to list, create, patch, delete, and probe credentials.
+
+## Local development with n8n-as-code
+
+Use `/home/etienne/repos/n8n-ecosystem-dev` for end-to-end local facade testing. It exports `N8N_MANAGER_COMMAND`, `N8N_MANAGER_STATE_PATH`, and `N8NAC_COMMAND` so generated agent instructions can target local builds while published installs keep using `npx --yes n8nac`.
