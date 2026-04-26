@@ -90,6 +90,8 @@ test('file-backed lifecycle refuses data destruction without force', async () =>
   const dockerState: DockerState = { commands: [] };
   const manager = new FileBackedN8nLifecycleManager(statePath, {
     runner: createDockerRunner(dockerState),
+    bootstrapOwner: false,
+    waitForReady: false,
   });
 
   await manager.setup({ mode: 'managed-local-docker' });
@@ -108,6 +110,8 @@ test('managed-local-docker setup creates and reports a real docker container', a
     containerName: 'test-n8n',
     volumeName: 'test-n8n-data',
     port: 5688,
+    bootstrapOwner: false,
+    waitForReady: false,
   });
 
   const instance = await manager.setup({ mode: 'managed-local-docker' });
@@ -131,6 +135,8 @@ test('managed-local-docker delete removes the container and can destroy the volu
     runner: createDockerRunner(dockerState),
     containerName: 'test-n8n-delete',
     volumeName: 'test-n8n-delete-data',
+    bootstrapOwner: false,
+    waitForReady: false,
   });
 
   await manager.setup({ mode: 'managed-local-docker' });

@@ -40,6 +40,7 @@ How do you want to use n8n?
 
 ```bash
 n8n-manager setup --mode managed-local-docker
+n8n-manager setup --mode managed-local-docker --tunnel
 n8n-manager status
 n8n-manager start
 n8n-manager stop
@@ -63,6 +64,12 @@ n8n-manager llm-proxy status
 - URL: `http://127.0.0.1:5678`
 
 These defaults can be overridden with `N8N_MANAGER_DOCKER_IMAGE`, `N8N_MANAGER_DOCKER_CONTAINER`, `N8N_MANAGER_DOCKER_VOLUME`, and `N8N_MANAGER_DOCKER_PORT`.
+
+By default, managed local setup waits for n8n readiness, silently creates the owner account when possible, creates a scoped n8n API key, and stores it in the local n8n-manager state. CLI/status output redacts the raw key and reports `apiKeyAvailable`.
+
+Use `--tunnel` to expose the managed local n8n through Cloudflare Tunnel. `n8n-manager` resolves `cloudflared` from PATH or downloads it into `~/.n8n-manager/bin`.
+
+Credential commands automatically use the managed local n8n URL/API key when `N8N_MANAGER_STATE_PATH` points at a managed state file and no explicit `--url`/`--api-key` is provided.
 
 Destructive operations are supported only when they are explicit and guarded. Deleting managed runtime data requires `--destroy-data --force`; without `--destroy-data`, `delete` removes the managed container and leaves the Docker volume intact.
 

@@ -22,12 +22,19 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     if (command === 'setup') {
       const mode = parseMode(readFlag(argv, '--mode') ?? 'generation-only');
       const baseUrl = readFlag(argv, '--url');
-      const snapshot = await lifecycle.setup({ mode, baseUrl });
+      const snapshot = await lifecycle.setup({
+        mode,
+        baseUrl,
+        tunnel: argv.includes('--tunnel'),
+        bootstrapOwner: !argv.includes('--no-bootstrap-owner'),
+      });
       printJson({
         operation: 'setup',
         instance: snapshot,
         next: mode === 'managed-local-docker'
-          ? `Open ${snapshot.baseUrl ?? 'the local n8n URL'} and finish first-run setup if n8n asks for an owner account.`
+          ? snapshot.apiKeyAvailable
+            ? `Open ${snapshot.tunnelPublicUrl ?? snapshot.baseUrl ?? 'the local n8n URL'}. Managed owner API key is ready.`
+            : `Open ${snapshot.baseUrl ?? 'the local n8n URL'} and finish first-run setup if n8n asks for an owner account.`
           : 'Run `n8n-manager credentials starter-kit ai-workflows`.',
       });
       return 0;
@@ -152,11 +159,23 @@ function parseKeyValueFlags(argv: string[]): Record<string, string> {
 }
 
 function createCredentialsManager(argv: string[]): N8nCredentialsManager {
-  const host = readFlag(argv, '--url') ?? process.env.N8N_HOST;
-  const apiKey = readFlag(argv, '--api-key') ?? process.env.N8N_API_KEY;
+  const managed = readManagedInstance();
+  const host = readFlag(argv, '--url') ?? process.env.N8N_HOST ?? managed?.baseUrl;
+  const apiKey = readFlag(argv, '--api-key') ?? process.env.N8N_API_KEY ?? managed?.apiKey;
   const projectId = readFlag(argv, '--project-id') ?? process.env.N8N_PROJECT_ID;
   const client = host && apiKey ? new N8nRestCredentialClient({ baseUrl: host, apiKey }) : undefined;
   return new N8nCredentialsManager({ client, projectId });
+}
+
+function readManagedInstance(): { baseUrl?: string; apiKey?: string } | undefined {
+  const statePath = process.env.N8N_MANAGER_STATE_PATH;
+  if (!statePath) return undefined;
+
+  try {
+    return JSON.parse(fs.readFileSync(statePath, 'utf8')) as { baseUrl?: string; apiKey?: string };
+  } catch {
+    return undefined;
+  }
 }
 
 function printCredentialInventory(items: CredentialInventoryItem[]): void {
@@ -178,7 +197,7 @@ function printHelp(): void {
   console.log(`n8n-manager
 
 Usage:
-  n8n-manager setup --mode generation-only|managed-local-docker|managed-local-direct|existing [--url URL]
+  n8n-manager setup --mode generation-only|managed-local-docker|managed-local-direct|existing [--url URL] [--tunnel] [--no-bootstrap-owner]
   n8n-manager status
   n8n-manager start
   n8n-manager stop
