@@ -95,6 +95,35 @@ export class N8nCredentialsManager {
     return ref;
   }
 
+  async deleteCredential(credentialIdOrRecipeId: string): Promise<{ credentialId?: string; recipeId?: string; deletedRemote: boolean; deletedInventory: boolean }> {
+    const inventory = await this.store.readInventory().catch(() => createEmptyCredentialInventory());
+    const item = inventory.availableCredentials.find((candidate) =>
+      candidate.credentialId === credentialIdOrRecipeId || candidate.recipeId === credentialIdOrRecipeId,
+    );
+    const credentialId = item?.credentialId ?? credentialIdOrRecipeId;
+
+    let deletedRemote = false;
+    if (this.client?.deleteCredential && credentialId && !credentialId.endsWith(':planned')) {
+      await this.client.deleteCredential(credentialId);
+      deletedRemote = true;
+    }
+
+    const nextItems = inventory.availableCredentials.filter((candidate) =>
+      candidate.credentialId !== credentialIdOrRecipeId
+      && candidate.recipeId !== credentialIdOrRecipeId
+      && candidate.credentialId !== credentialId,
+    );
+    const deletedInventory = nextItems.length !== inventory.availableCredentials.length;
+    await this.store.writeInventory({ availableCredentials: nextItems });
+
+    return {
+      credentialId,
+      recipeId: item?.recipeId,
+      deletedRemote,
+      deletedInventory,
+    };
+  }
+
   async testCredential(credentialIdOrRecipeId: string): Promise<CredentialTestResult> {
     const inventory = await this.store.readInventory();
     const item = inventory.availableCredentials.find((candidate) =>

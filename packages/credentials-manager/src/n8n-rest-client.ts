@@ -94,6 +94,10 @@ export class N8nRestCredentialClient implements N8nCredentialClient {
     }
   }
 
+  async deleteCredential(credentialId: string): Promise<void> {
+    await this.request<Record<string, unknown>>('DELETE', `/api/v1/credentials/${encodeURIComponent(credentialId)}`);
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method,

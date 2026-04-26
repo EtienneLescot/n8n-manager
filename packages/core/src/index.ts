@@ -25,12 +25,18 @@ export interface N8nHealthSnapshot {
   }>;
 }
 
+export interface DeleteN8nInstanceInput {
+  destroyData?: boolean;
+  force?: boolean;
+}
+
 export interface N8nLifecycleManager {
   setup(input: { mode: N8nInstanceMode; baseUrl?: string; apiKeyRef?: string }): Promise<N8nInstanceRef>;
   status(): Promise<N8nHealthSnapshot>;
   start(): Promise<N8nHealthSnapshot>;
   stop(): Promise<N8nHealthSnapshot>;
   restart(): Promise<N8nHealthSnapshot>;
+  delete(input?: DeleteN8nInstanceInput): Promise<N8nHealthSnapshot>;
 }
 
 export interface N8nWorkflowManager {
@@ -83,6 +89,17 @@ export class NonDestructiveN8nLifecycleManager implements N8nLifecycleManager {
   async restart(): Promise<N8nHealthSnapshot> {
     return this.status();
   }
+
+  async delete(input: DeleteN8nInstanceInput = {}): Promise<N8nHealthSnapshot> {
+    if (input.destroyData && !input.force) {
+      throw new Error('Refusing to destroy n8n data without force=true.');
+    }
+    this.instance = undefined;
+    return {
+      status: 'not-configured',
+      checks: [{ id: 'instance', label: 'n8n instance', status: 'pass', message: 'Instance configuration deleted.' }],
+    };
+  }
 }
 
 export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
@@ -127,6 +144,25 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
 
   async restart(): Promise<N8nHealthSnapshot> {
     return this.status();
+  }
+
+  async delete(input: DeleteN8nInstanceInput = {}): Promise<N8nHealthSnapshot> {
+    if (input.destroyData && !input.force) {
+      throw new Error('Refusing to destroy n8n data without force=true.');
+    }
+
+    await fs.rm(this.statePath, { force: true });
+    return {
+      status: 'not-configured',
+      checks: [{
+        id: 'instance',
+        label: 'n8n instance',
+        status: 'pass',
+        message: input.destroyData
+          ? 'Instance configuration deleted. Managed data destruction is acknowledged but no provider-specific volume removal is wired yet.'
+          : 'Instance configuration deleted.',
+      }],
+    };
   }
 
   private async readInstance(): Promise<N8nInstanceRef | undefined> {

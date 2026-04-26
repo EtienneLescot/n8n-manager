@@ -134,6 +134,7 @@ export interface N8nCredentialClient {
     service: string;
     projectId?: string;
   }): Promise<N8nCredentialRef>;
+  deleteCredential?(credentialId: string): Promise<void>;
   testCredential?(credentialId: string): Promise<CredentialTestResult>;
 }
 

@@ -31,6 +31,31 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       return 0;
     }
 
+    if (command === 'start') {
+      printJson(await lifecycle.start());
+      return 0;
+    }
+
+    if (command === 'stop') {
+      printJson(await lifecycle.stop());
+      return 0;
+    }
+
+    if (command === 'restart') {
+      printJson(await lifecycle.restart());
+      return 0;
+    }
+
+    if (command === 'delete') {
+      const destroyData = argv.includes('--destroy-data');
+      const force = argv.includes('--force');
+      if (destroyData && !force) {
+        throw new Error('Refusing to destroy n8n data without --force.');
+      }
+      printJson(await lifecycle.delete({ destroyData, force }));
+      return 0;
+    }
+
     if (command === 'credentials') {
       if (subcommand === 'recipes') {
         printJson(await credentials.listRecipes());
@@ -65,6 +90,12 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       if (subcommand === 'test') {
         if (!value) throw new Error('Missing credential id or recipe id.');
         printJson(await credentials.testCredential(value));
+        return 0;
+      }
+
+      if (subcommand === 'delete') {
+        if (!value) throw new Error('Missing credential id or recipe id.');
+        printJson({ operation: 'credentials.delete', result: await credentials.deleteCredential(value) });
         return 0;
       }
     }
@@ -142,12 +173,17 @@ function printHelp(): void {
 Usage:
   n8n-manager setup --mode generation-only|managed-local-docker|managed-local-direct|existing [--url URL]
   n8n-manager status
+  n8n-manager start
+  n8n-manager stop
+  n8n-manager restart
+  n8n-manager delete [--destroy-data --force]
   n8n-manager credentials list
   n8n-manager credentials recipes
   n8n-manager credentials setup <recipe-id> [--name NAME] [--key=value]
   n8n-manager credentials setup <recipe-id> --url URL --api-key KEY [--project-id ID] [--name NAME] [--key=value]
   n8n-manager credentials starter-kit [starter-kit-id]
   n8n-manager credentials test <credential-id-or-recipe-id>
+  n8n-manager credentials delete <credential-id-or-recipe-id>
   n8n-manager llm-proxy status
 `);
 }

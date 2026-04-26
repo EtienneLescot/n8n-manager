@@ -110,6 +110,65 @@ test('N8nRestCredentialClient creates when no matching credential exists', async
   assert.equal(calls.some((call) => call.init.method === 'POST'), true);
 });
 
+test('manager deletes a credential remotely and removes it from inventory', async () => {
+  const store = new MemoryCredentialStateStore();
+  const deletedIds: string[] = [];
+  const manager = new N8nCredentialsManager({
+    store,
+    client: {
+      async listCredentials() {
+        return [];
+      },
+      async upsertCredential(input) {
+        return {
+          id: 'cred-delete-me',
+          name: input.name,
+          type: input.type,
+          recipeId: input.recipeId,
+          service: input.service,
+        };
+      },
+      async deleteCredential(credentialId) {
+        deletedIds.push(credentialId);
+      },
+    },
+  });
+
+  await manager.ensureCredential('http-bearer', {
+    credentialName: 'Bearer',
+    values: { token: 'secret' },
+  });
+
+  const result = await manager.deleteCredential('http-bearer');
+  assert.deepEqual(deletedIds, ['cred-delete-me']);
+  assert.equal(result.deletedRemote, true);
+  assert.equal(result.deletedInventory, true);
+
+  const inventory = await manager.getCredentialInventory();
+  const item = inventory.availableCredentials.find((candidate) => candidate.recipeId === 'http-bearer');
+  assert.equal(item?.status, 'missing');
+});
+
+test('N8nRestCredentialClient deletes credentials through the n8n API', async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    if (init?.method === 'DELETE' && String(url).endsWith('/api/v1/credentials/cred-1')) {
+      return jsonResponse({});
+    }
+    return jsonResponse({ message: 'unexpected' }, 500);
+  };
+
+  const client = new N8nRestCredentialClient({
+    baseUrl: 'http://127.0.0.1:5678',
+    apiKey: 'key',
+    fetchImpl: fetchImpl as typeof fetch,
+  });
+
+  await client.deleteCredential('cred-1');
+  assert.equal(calls[0]?.init.method, 'DELETE');
+});
+
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,

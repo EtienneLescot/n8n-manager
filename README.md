@@ -41,13 +41,20 @@ How do you want to use n8n?
 ```bash
 n8n-manager setup
 n8n-manager status
+n8n-manager start
+n8n-manager stop
+n8n-manager restart
+n8n-manager delete
 n8n-manager credentials list
 n8n-manager credentials setup llm-proxy
+n8n-manager credentials delete llm-proxy
 n8n-manager credentials starter-kit ai-workflows
 n8n-manager credentials test llm-proxy
 n8n-manager llm-proxy status
 ```
 
-The current implementation is intentionally non-destructive. It records credential readiness and exposes stable contracts before wiring destructive lifecycle operations such as reset, destroy, or volume deletion.
+`n8n-manager` owns normal management operations. It can create/update instance configuration with `setup`, remove instance configuration with `delete`, and create/update/delete credentials through the credentials manager.
 
-When `N8N_HOST` and `N8N_API_KEY` are set, or when `--url` and `--api-key` are passed, credential setup uses the n8n REST API to list, create, patch, and probe credentials.
+Destructive operations are supported only when they are explicit and guarded. For example, deleting managed runtime data requires `--destroy-data --force`; provider-specific Docker volume removal is still a wiring step, so the current implementation acknowledges the intent without silently deleting volumes.
+
+When `N8N_HOST` and `N8N_API_KEY` are set, or when `--url` and `--api-key` are passed, credential setup uses the n8n REST API to list, create, patch, delete, and probe credentials.
