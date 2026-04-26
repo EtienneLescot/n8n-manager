@@ -6,6 +6,30 @@ It does not just start n8n. It prepares n8n to run useful workflows by owning th
 
 n8n-as-code is an independent community project and is not affiliated with, endorsed by, or sponsored by n8n.
 
+## Positioning
+
+`n8n-manager` is an independent runtime engine.
+
+It does not own workflow generation or workflow intelligence. Those belong to the n8n-as-code workflow engine. User-facing facades such as `n8nac`, the VS Code/Cursor extension, MCP, Claude/OpenClaw plugins, YAGR, and future apps can import both engines:
+
+```txt
+facade
+  -> workflow-core for generate / validate / search / explain
+  -> n8n-manager for setup / credentials / deploy / run / inspect
+```
+
+The runtime engine must not depend on the workflow engine, and the workflow engine must not depend on this repo.
+
+All facades should expose the same product choice:
+
+```txt
+How do you want to use n8n?
+
+[Recommended] Create and manage a local n8n automatically
+[Connect an existing n8n]
+[Use generation-only mode]
+```
+
 ## Packages
 
 - `@n8n-as-code/n8n-manager-core`: lifecycle and diagnostics contracts.
