@@ -1,0 +1,26 @@
+{
+  "name": "@n8n-as-code/n8n-manager",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "n8n-manager": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@n8n-as-code/n8n-credentials-manager": "file:../credentials-manager",
+    "@n8n-as-code/n8n-manager-core": "file:../core"
+  }
+}

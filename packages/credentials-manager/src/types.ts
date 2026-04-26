@@ -1,0 +1,143 @@
+export type CredentialAuthMethod =
+  | 'api-key'
+  | 'oauth2'
+  | 'pat'
+  | 'basic'
+  | 'header'
+  | 'bearer'
+  | 'database'
+  | 'llm-proxy'
+  | 'webhook-secret';
+
+export type CredentialStatus =
+  | 'ready'
+  | 'missing'
+  | 'partially-configured'
+  | 'requires-oauth'
+  | 'requires-api-key'
+  | 'requires-external-setup'
+  | 'requires-admin-approval'
+  | 'test-failed'
+  | 'skipped';
+
+export type CredentialRiskLevel = 'low' | 'medium' | 'high';
+export type CredentialFrictionLevel = 'low' | 'medium' | 'high';
+
+export interface CredentialInputDefinition {
+  key: string;
+  label: string;
+  secret?: boolean;
+  required: boolean;
+  description?: string;
+}
+
+export interface ValidationProbe {
+  kind: 'n8n-credential-test' | 'http' | 'manual' | 'llm-proxy-health';
+  description: string;
+}
+
+export interface SetupFlow {
+  kind: 'automatic' | 'guided' | 'manual' | 'external';
+  steps: string[];
+}
+
+export interface CredentialRecipe {
+  id: string;
+  service: string;
+  label: string;
+  credentialTypeName: string;
+  authMethod: CredentialAuthMethod;
+  requiredInputs: CredentialInputDefinition[];
+  supportedNodes: string[];
+  validation: ValidationProbe;
+  setupFlow: SetupFlow;
+  frictionLevel: CredentialFrictionLevel;
+  riskLevel: CredentialRiskLevel;
+}
+
+export interface SecretRef {
+  provider: string;
+  key: string;
+}
+
+export interface LlmConnectionDescriptor {
+  provider: string;
+  model: string;
+  baseUrl?: string;
+  apiKeyRef?: SecretRef;
+  openAiCompatible: boolean;
+  proxyBaseUrl?: string;
+}
+
+export interface LlmSource {
+  id: string;
+  label: string;
+  getDescriptor(): Promise<LlmConnectionDescriptor>;
+  getSecret?(ref: SecretRef): Promise<string | undefined>;
+}
+
+export interface N8nCredentialRef {
+  id: string;
+  name: string;
+  type: string;
+  recipeId: string;
+  service: string;
+}
+
+export interface CredentialInventoryItem {
+  recipeId: string;
+  service: string;
+  nodes: string[];
+  credentialName?: string;
+  credentialId?: string;
+  credentialTypeName: string;
+  status: CredentialStatus;
+  reason?: string;
+  updatedAt: string;
+}
+
+export interface CredentialInventory {
+  availableCredentials: CredentialInventoryItem[];
+}
+
+export interface CredentialTestResult {
+  credentialId: string;
+  status: 'pass' | 'fail' | 'skip';
+  message?: string;
+}
+
+export interface StarterKit {
+  id: string;
+  label: string;
+  recipeIds: string[];
+}
+
+export interface StarterKitResult {
+  starterKitId: string;
+  items: CredentialInventoryItem[];
+}
+
+export interface EnsureCredentialInput {
+  credentialName?: string;
+  values?: Record<string, string>;
+  source?: LlmSource;
+  mode?: 'proxy' | 'direct';
+}
+
+export interface N8nCredentialClient {
+  listCredentials(): Promise<N8nCredentialRef[]>;
+  upsertCredential(input: {
+    name: string;
+    type: string;
+    data: Record<string, unknown>;
+    recipeId: string;
+    service: string;
+    projectId?: string;
+  }): Promise<N8nCredentialRef>;
+  testCredential?(credentialId: string): Promise<CredentialTestResult>;
+}
+
+export interface CredentialStateStore {
+  readInventory(): Promise<CredentialInventory>;
+  writeInventory(inventory: CredentialInventory): Promise<void>;
+}
