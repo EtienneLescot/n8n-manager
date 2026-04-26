@@ -39,7 +39,7 @@ How do you want to use n8n?
 ## CLI
 
 ```bash
-n8n-manager setup
+n8n-manager setup --mode managed-local-docker
 n8n-manager status
 n8n-manager start
 n8n-manager stop
@@ -55,7 +55,16 @@ n8n-manager llm-proxy status
 
 `n8n-manager` owns normal management operations. It can create/update instance configuration with `setup`, remove instance configuration with `delete`, and create/update/delete credentials through the credentials manager.
 
-Destructive operations are supported only when they are explicit and guarded. For example, deleting managed runtime data requires `--destroy-data --force`; provider-specific Docker volume removal is still a wiring step, so the current implementation acknowledges the intent without silently deleting volumes.
+`managed-local-docker` creates a real local Docker container:
+
+- image: `n8nio/n8n:latest`
+- container: `n8n-manager-local`
+- volume: `n8n-manager-local-data`
+- URL: `http://127.0.0.1:5678`
+
+These defaults can be overridden with `N8N_MANAGER_DOCKER_IMAGE`, `N8N_MANAGER_DOCKER_CONTAINER`, `N8N_MANAGER_DOCKER_VOLUME`, and `N8N_MANAGER_DOCKER_PORT`.
+
+Destructive operations are supported only when they are explicit and guarded. Deleting managed runtime data requires `--destroy-data --force`; without `--destroy-data`, `delete` removes the managed container and leaves the Docker volume intact.
 
 When `N8N_HOST` and `N8N_API_KEY` are set, or when `--url` and `--api-key` are passed, credential setup uses the n8n REST API to list, create, patch, delete, and probe credentials.
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
 import { FileBackedN8nLifecycleManager, type N8nInstanceMode } from '@n8n-as-code/n8n-manager-core';
 import {
   N8nCredentialsManager,
@@ -9,7 +10,7 @@ import {
 
 export async function runCli(argv = process.argv.slice(2)): Promise<number> {
   const [command, subcommand, value] = argv;
-  const lifecycle = new FileBackedN8nLifecycleManager();
+  const lifecycle = new FileBackedN8nLifecycleManager(process.env.N8N_MANAGER_STATE_PATH);
   const credentials = createCredentialsManager(argv);
 
   try {
@@ -22,7 +23,13 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       const mode = parseMode(readFlag(argv, '--mode') ?? 'generation-only');
       const baseUrl = readFlag(argv, '--url');
       const snapshot = await lifecycle.setup({ mode, baseUrl });
-      printJson({ operation: 'setup', instance: snapshot, next: 'Run `n8n-manager credentials starter-kit ai-workflows`.' });
+      printJson({
+        operation: 'setup',
+        instance: snapshot,
+        next: mode === 'managed-local-docker'
+          ? `Open ${snapshot.baseUrl ?? 'the local n8n URL'} and finish first-run setup if n8n asks for an owner account.`
+          : 'Run `n8n-manager credentials starter-kit ai-workflows`.',
+      });
       return 0;
     }
 
@@ -188,6 +195,18 @@ Usage:
 `);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isCliEntrypoint(): boolean {
+  if (!process.argv[1]) {
+    return false;
+  }
+
+  try {
+    return fs.realpathSync(new URL(import.meta.url)) === fs.realpathSync(process.argv[1]);
+  } catch {
+    return import.meta.url === `file://${process.argv[1]}`;
+  }
+}
+
+if (isCliEntrypoint()) {
   process.exitCode = await runCli();
 }
