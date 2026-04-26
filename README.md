@@ -65,7 +65,7 @@ n8n-manager llm-proxy status
 
 These defaults can be overridden with `N8N_MANAGER_DOCKER_IMAGE`, `N8N_MANAGER_DOCKER_CONTAINER`, `N8N_MANAGER_DOCKER_VOLUME`, and `N8N_MANAGER_DOCKER_PORT`.
 
-By default, managed local setup waits for n8n readiness, silently creates the owner account when possible, creates a scoped n8n API key, and stores it in the local n8n-manager state. CLI/status output redacts the raw key and reports `apiKeyAvailable`.
+By default, managed local setup waits for n8n readiness, silently creates the owner account when possible, creates a scoped n8n API key, and stores it in the local n8n-manager state. CLI/status output redacts the raw key and reports `apiKeyAvailable`. Owner credentials are stored before first-run setup so retries can recover if n8n creates the owner but API key creation is interrupted. Set `N8N_MANAGER_OWNER_EMAIL` and `N8N_MANAGER_OWNER_PASSWORD` to reuse a known existing owner account.
 
 Use `--tunnel` to expose the managed local n8n through Cloudflare Tunnel. `n8n-manager` resolves `cloudflared` from PATH or downloads it into `~/.n8n-manager/bin`.
 

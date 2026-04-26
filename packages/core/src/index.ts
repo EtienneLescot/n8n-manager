@@ -26,6 +26,10 @@ export interface N8nInstanceRef {
   apiKeyScopes?: string[];
   apiKeyAvailable?: boolean;
   ownerEmail?: string;
+  ownerPassword?: string;
+  ownerFirstName?: string;
+  ownerLastName?: string;
+  ownerCredentialsAvailable?: boolean;
   tunnelPublicUrl?: string;
   tunnelPid?: number;
 }
@@ -242,11 +246,13 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       apiKey: ownerBootstrap?.apiKey ?? existingState?.apiKey,
       apiKeyScopes: ownerBootstrap?.apiKeyScopes ?? existingState?.apiKeyScopes,
       ownerEmail: ownerBootstrap?.ownerEmail ?? existingState?.ownerEmail,
+      ownerPassword: ownerBootstrap?.ownerPassword ?? existingState?.ownerPassword,
+      ownerFirstName: ownerBootstrap?.ownerFirstName ?? existingState?.ownerFirstName,
+      ownerLastName: ownerBootstrap?.ownerLastName ?? existingState?.ownerLastName,
       tunnelPublicUrl: tunnel?.publicUrl,
       tunnelPid: tunnel?.pid,
     };
-    await fs.mkdir(path.dirname(this.statePath), { recursive: true });
-    await fs.writeFile(this.statePath, JSON.stringify(instance, null, 2));
+    await this.writeInstance(instance);
     return toPublicInstance(instance);
   }
 
@@ -473,17 +479,25 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     }
   }
 
-  private async bootstrapManagedOwner(baseUrl?: string): Promise<{ apiKey?: string; apiKeyScopes?: string[]; ownerEmail?: string }> {
+  private async bootstrapManagedOwner(baseUrl?: string): Promise<ManagedOwnerBootstrap> {
     if (!baseUrl) {
       return {};
     }
 
     const existing = await this.readInstance();
     if (existing?.apiKey) {
-      return { apiKey: existing.apiKey, apiKeyScopes: existing.apiKeyScopes, ownerEmail: existing.ownerEmail };
+      return {
+        apiKey: existing.apiKey,
+        apiKeyScopes: existing.apiKeyScopes,
+        ownerEmail: existing.ownerEmail,
+        ownerPassword: existing.ownerPassword,
+        ownerFirstName: existing.ownerFirstName,
+        ownerLastName: existing.ownerLastName,
+      };
     }
 
-    const ownerCredentials = buildGeneratedOwnerCredentials(baseUrl);
+    const ownerCredentials = await this.resolveManagedOwnerCredentials(baseUrl, existing);
+    await this.persistManagedOwnerCredentials(baseUrl, ownerCredentials, existing);
 
     try {
       const sessionCookie = await retryBootstrapStep('owner setup/login', async () => {
@@ -491,10 +505,24 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       });
       const apiKey = await retryBootstrapStep('api key creation', async () => await this.createApiKey(baseUrl, sessionCookie));
       await this.finalizeManagedLocalN8nReadiness(baseUrl, sessionCookie, ownerCredentials?.email);
-      return { apiKey, apiKeyScopes: DEFAULT_API_KEY_SCOPES, ownerEmail: ownerCredentials?.email };
+      return {
+        apiKey,
+        apiKeyScopes: DEFAULT_API_KEY_SCOPES,
+        ownerEmail: ownerCredentials.email,
+        ownerPassword: ownerCredentials.password,
+        ownerFirstName: ownerCredentials.firstName,
+        ownerLastName: ownerCredentials.lastName,
+      };
     } catch (error) {
       if (existing?.apiKey) {
-        return { apiKey: existing.apiKey, apiKeyScopes: existing.apiKeyScopes, ownerEmail: existing.ownerEmail };
+        return {
+          apiKey: existing.apiKey,
+          apiKeyScopes: existing.apiKeyScopes,
+          ownerEmail: existing.ownerEmail,
+          ownerPassword: existing.ownerPassword,
+          ownerFirstName: existing.ownerFirstName,
+          ownerLastName: existing.ownerLastName,
+        };
       }
       throw new Error(`Managed local n8n is running, but owner/API key bootstrap failed: ${formatCommandError(error)}`);
     }
@@ -513,7 +541,15 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     });
 
     if (!response.ok) {
-      throw new Error(`Owner setup failed with ${response.status} ${response.statusText}.`);
+      const body = await safeReadText(response);
+      try {
+        return await this.loginOwner(baseUrl, credentials);
+      } catch (loginError) {
+        throw new Error(
+          `Owner setup failed with ${response.status} ${response.statusText}${body ? `: ${body}` : ''}; `
+          + `stored owner login also failed: ${formatCommandError(loginError)}.`,
+        );
+      }
     }
 
     const authCookie = extractCookie(response.headers.get('set-cookie'), 'n8n-auth');
@@ -621,6 +657,59 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     }).catch(() => undefined);
   }
 
+  private async resolveManagedOwnerCredentials(
+    baseUrl: string,
+    existing?: N8nInstanceRef,
+  ): Promise<ManagedOwnerCredentials> {
+    if (existing?.ownerEmail && existing.ownerPassword) {
+      return {
+        email: existing.ownerEmail,
+        password: existing.ownerPassword,
+        firstName: existing.ownerFirstName ?? 'n8n',
+        lastName: existing.ownerLastName ?? 'Manager',
+      };
+    }
+
+    const envEmail = process.env.N8N_MANAGER_OWNER_EMAIL;
+    const envPassword = process.env.N8N_MANAGER_OWNER_PASSWORD;
+    if (envEmail && envPassword) {
+      return {
+        email: envEmail,
+        password: envPassword,
+        firstName: process.env.N8N_MANAGER_OWNER_FIRST_NAME ?? 'n8n',
+        lastName: process.env.N8N_MANAGER_OWNER_LAST_NAME ?? 'Manager',
+      };
+    }
+
+    return buildGeneratedOwnerCredentials(baseUrl);
+  }
+
+  private async persistManagedOwnerCredentials(
+    baseUrl: string,
+    credentials: ManagedOwnerCredentials,
+    existing?: N8nInstanceRef,
+  ): Promise<void> {
+    await this.writeInstance({
+      id: existing?.id ?? this.containerName,
+      mode: existing?.mode ?? 'managed-local-docker',
+      baseUrl: existing?.baseUrl ?? baseUrl,
+      apiKeyRef: existing?.apiKeyRef,
+      projectName: existing?.projectName,
+      provider: existing?.provider ?? 'docker',
+      containerName: existing?.containerName ?? this.containerName,
+      volumeName: existing?.volumeName ?? this.volumeName,
+      image: existing?.image ?? this.dockerImage,
+      apiKey: existing?.apiKey,
+      apiKeyScopes: existing?.apiKeyScopes,
+      ownerEmail: credentials.email,
+      ownerPassword: credentials.password,
+      ownerFirstName: credentials.firstName,
+      ownerLastName: credentials.lastName,
+      tunnelPublicUrl: existing?.tunnelPublicUrl,
+      tunnelPid: existing?.tunnelPid,
+    });
+  }
+
   private async ensureTunnel(targetUrl?: string): Promise<{ publicUrl: string; pid: number } | undefined> {
     if (!targetUrl) {
       return undefined;
@@ -698,6 +787,11 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       return undefined;
     }
   }
+
+  private async writeInstance(instance: N8nInstanceRef): Promise<void> {
+    await fs.mkdir(path.dirname(this.statePath), { recursive: true });
+    await fs.writeFile(this.statePath, JSON.stringify(instance, null, 2));
+  }
 }
 
 export async function readFileBackedN8nInstance(
@@ -720,14 +814,11 @@ function formatCommandError(error: unknown): string {
 }
 
 function toPublicInstance(instance: N8nInstanceRef): N8nInstanceRef {
-  if (!instance.apiKey) {
-    return instance;
-  }
-
-  const { apiKey: _apiKey, ...rest } = instance;
+  const { apiKey: _apiKey, ownerPassword: _ownerPassword, ...rest } = instance;
   return {
     ...rest,
-    apiKeyAvailable: true,
+    apiKeyAvailable: instance.apiKey ? true : rest.apiKeyAvailable,
+    ownerCredentialsAvailable: instance.ownerEmail && instance.ownerPassword ? true : rest.ownerCredentialsAvailable,
   };
 }
 
@@ -736,6 +827,15 @@ interface ManagedOwnerCredentials {
   password: string;
   firstName: string;
   lastName: string;
+}
+
+interface ManagedOwnerBootstrap {
+  apiKey?: string;
+  apiKeyScopes?: string[];
+  ownerEmail?: string;
+  ownerPassword?: string;
+  ownerFirstName?: string;
+  ownerLastName?: string;
 }
 
 function buildGeneratedOwnerCredentials(baseUrl: string): ManagedOwnerCredentials {
