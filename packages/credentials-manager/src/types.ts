@@ -144,7 +144,7 @@ export interface StarterKitResult {
 
 export interface EnsureCredentialInput {
   credentialName?: string;
-  values?: Record<string, string>;
+  values?: Record<string, unknown>;
   source?: LlmSource;
   mode?: 'proxy' | 'direct';
 }

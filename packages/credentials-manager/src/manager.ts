@@ -91,7 +91,7 @@ export class N8nCredentialsManager {
       throw new Error(`Cannot ensure ${recipe.id}: missing LLM source or proxyBaseUrl`);
     }
 
-    const missingInputs = recipe.requiredInputs.filter((field) => field.required && !input.values?.[field.key]);
+    const missingInputs = recipe.requiredInputs.filter((field) => field.required && isMissingInput(input.values?.[field.key]));
     if (recipe.authMethod !== 'llm-proxy' && missingInputs.length > 0) {
       await this.upsertInventoryItem(this.buildInventoryItem(
         recipe,
@@ -266,4 +266,8 @@ export class N8nCredentialsManager {
     nextItems.push(item);
     await this.store.writeInventory({ availableCredentials: nextItems });
   }
+}
+
+function isMissingInput(value: unknown): boolean {
+  return value === undefined || value === null || value === '';
 }
