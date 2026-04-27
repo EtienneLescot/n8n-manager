@@ -79,6 +79,68 @@ export class N8nCredentialsManager {
     return { availableCredentials: merged };
   }
 
+  async listCredentials(): Promise<N8nCredentialRef[]> {
+    if (this.client) {
+      return this.client.listCredentials();
+    }
+
+    const inventory = await this.store.readInventory().catch(() => createEmptyCredentialInventory());
+    return inventory.availableCredentials
+      .filter((item) => item.credentialId && item.credentialName)
+      .map((item) => ({
+        id: item.credentialId ?? '',
+        name: item.credentialName ?? item.recipeId,
+        type: item.credentialTypeName,
+        recipeId: item.recipeId,
+        service: item.service,
+      }));
+  }
+
+  async ensureCredentialType(input: {
+    credentialId?: string;
+    credentialName: string;
+    credentialTypeName: string;
+    values: Record<string, unknown>;
+  }): Promise<N8nCredentialRef> {
+    const catalogEntry = (await this.listCredentialCatalog()).find((candidate) => candidate.typeName === input.credentialTypeName);
+    if (!catalogEntry) {
+      throw new Error(`Unknown n8n credential type: ${input.credentialTypeName}`);
+    }
+
+    const recipe = listCredentialRecipes().find((candidate) => candidate.credentialTypeName === input.credentialTypeName);
+    const recipeId = recipe?.id ?? `type:${input.credentialTypeName}:${input.credentialId || input.credentialName}`;
+    const service = recipe?.service ?? 'n8n';
+    const ref = this.client
+      ? await this.client.upsertCredential({
+          id: input.credentialId,
+          name: input.credentialName,
+          type: input.credentialTypeName,
+          data: input.values,
+          recipeId,
+          service,
+          projectId: this.projectId,
+        })
+      : {
+          id: input.credentialId ?? `${recipeId}:planned`,
+          name: input.credentialName,
+          type: input.credentialTypeName,
+          recipeId,
+          service,
+        };
+
+    await this.upsertInventoryItem({
+      recipeId,
+      service,
+      nodes: catalogEntry.usedByNodes.map((node) => node.nodeDisplayName ?? node.nodeName),
+      credentialName: ref.name,
+      credentialId: ref.id,
+      credentialTypeName: ref.type,
+      status: 'ready',
+      updatedAt: this.now().toISOString(),
+    });
+    return ref;
+  }
+
   async ensureCredential(recipeId: string, input: EnsureCredentialInput = {}): Promise<N8nCredentialRef> {
     const recipe = this.requireRecipe(recipeId);
     if (recipe.authMethod === 'llm-proxy' && !input.source && !input.values?.proxyBaseUrl && !input.values?.url) {

@@ -153,6 +153,7 @@ export interface N8nCredentialClient {
   listCredentials(): Promise<N8nCredentialRef[]>;
   getCredentialSchema?(typeName: string): Promise<Record<string, unknown>>;
   upsertCredential(input: {
+    id?: string;
     name: string;
     type: string;
     data: Record<string, unknown>;

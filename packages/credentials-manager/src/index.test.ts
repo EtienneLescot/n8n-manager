@@ -67,6 +67,53 @@ test('returns remote n8n credential schemas when a client is configured', async 
   });
 });
 
+test('ensures a credential from a native n8n credential type', async () => {
+  const store = new MemoryCredentialStateStore();
+  const upserts: unknown[] = [];
+  const manager = new N8nCredentialsManager({
+    store,
+    catalogProvider: new RecipeCredentialCatalogProvider(),
+    client: {
+      async listCredentials() {
+        return [];
+      },
+      async upsertCredential(input) {
+        upserts.push(input);
+        return {
+          id: input.id ?? 'cred-native',
+          name: input.name,
+          type: input.type,
+          recipeId: input.recipeId,
+          service: input.service,
+        };
+      },
+    },
+  });
+
+  const ref = await manager.ensureCredentialType({
+    credentialName: 'Native OpenAI',
+    credentialTypeName: 'openAiApi',
+    values: { apiKey: 'sk-test', url: 'https://api.openai.com/v1' },
+  });
+
+  assert.equal(ref.id, 'cred-native');
+  assert.equal(ref.type, 'openAiApi');
+  assert.deepEqual(upserts, [{
+    id: undefined,
+    name: 'Native OpenAI',
+    type: 'openAiApi',
+    data: { apiKey: 'sk-test', url: 'https://api.openai.com/v1' },
+    recipeId: 'openai-native',
+    service: 'llm',
+    projectId: undefined,
+  }]);
+
+  const inventory = await store.readInventory();
+  const item = inventory.availableCredentials.find((candidate) => candidate.recipeId === 'openai-native');
+  assert.equal(item?.status, 'ready');
+  assert.equal(item?.credentialId, 'cred-native');
+});
+
 test('ensures an LLM proxy credential from a generic source', async () => {
   const manager = new N8nCredentialsManager({ store: new MemoryCredentialStateStore() });
   const ref = await manager.ensureCredential('llm-proxy', {
@@ -129,6 +176,40 @@ test('N8nRestCredentialClient patches an existing credential instead of recreati
   });
 
   assert.equal(ref.id, 'cred-1');
+  assert.equal(calls.some((call) => call.init.method === 'PATCH'), true);
+  assert.equal(calls.some((call) => call.init.method === 'POST'), false);
+});
+
+test('N8nRestCredentialClient patches a credential by id when editing', async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    const method = init?.method ?? 'GET';
+    if (method === 'GET' && String(url).endsWith('/api/v1/credentials')) {
+      return jsonResponse({ data: [{ id: 'cred-1', name: 'Old name', type: 'openAiApi' }] });
+    }
+    if (method === 'PATCH' && String(url).endsWith('/api/v1/credentials/cred-1')) {
+      return jsonResponse({ id: 'cred-1', name: 'New name', type: 'openAiApi' });
+    }
+    return jsonResponse({ message: 'unexpected' }, 500);
+  };
+
+  const client = new N8nRestCredentialClient({
+    baseUrl: 'http://127.0.0.1:5678',
+    apiKey: 'key',
+    fetchImpl: fetchImpl as typeof fetch,
+  });
+
+  const ref = await client.upsertCredential({
+    id: 'cred-1',
+    name: 'New name',
+    type: 'openAiApi',
+    data: { url: 'https://api.openai.com/v1' },
+    recipeId: 'openai-native',
+    service: 'llm',
+  });
+
+  assert.equal(ref.name, 'New name');
   assert.equal(calls.some((call) => call.init.method === 'PATCH'), true);
   assert.equal(calls.some((call) => call.init.method === 'POST'), false);
 });

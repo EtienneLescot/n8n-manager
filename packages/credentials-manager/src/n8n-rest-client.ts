@@ -51,6 +51,7 @@ export class N8nRestCredentialClient implements N8nCredentialClient {
   }
 
   async upsertCredential(input: {
+    id?: string;
     name: string;
     type: string;
     data: Record<string, unknown>;
@@ -58,9 +59,11 @@ export class N8nRestCredentialClient implements N8nCredentialClient {
     service: string;
     projectId?: string;
   }): Promise<N8nCredentialRef> {
-    const existing = (await this.listCredentials()).find((credential) =>
-      credential.name === input.name && credential.type === input.type,
-    );
+    const existing = input.id
+      ? (await this.listCredentials()).find((credential) => credential.id === input.id)
+      : (await this.listCredentials()).find((credential) =>
+          credential.name === input.name && credential.type === input.type,
+        );
     const payload = {
       name: input.name,
       type: input.type,
