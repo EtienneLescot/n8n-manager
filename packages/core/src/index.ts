@@ -111,7 +111,6 @@ const DEFAULT_API_KEY_SCOPES = [
   'workflow:delete',
   'workflow:activate',
   'workflow:deactivate',
-  'credential:read',
   'credential:list',
   'credential:create',
   'credential:update',

@@ -210,7 +210,7 @@ test('managed-local-docker bootstrap logs in when owner setup already exists', a
     'POST /rest/login',
     'POST /rest/api-keys',
   ]);
-  assert.ok(apiKeyBodies[0]?.scopes?.includes('credential:read'));
+  assert.ok(apiKeyBodies[0]?.scopes?.includes('credential:list'));
 });
 
 test('managed-local-docker refreshes stored API keys with missing scopes', async () => {
@@ -265,7 +265,7 @@ test('managed-local-docker refreshes stored API keys with missing scopes', async
   const rawState = await readFileBackedN8nInstance(statePath);
 
   assert.equal(rawState?.apiKey, 'n8n_api_refreshed');
-  assert.ok(rawState?.apiKeyScopes?.includes('credential:read'));
+  assert.ok(rawState?.apiKeyScopes?.includes('credential:list'));
   assert.deepEqual(requests.slice(0, 3), [
     'POST /rest/owner/setup',
     'POST /rest/login',
