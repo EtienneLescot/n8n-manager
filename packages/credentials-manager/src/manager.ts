@@ -55,7 +55,13 @@ export class N8nCredentialsManager {
 
   async getCredentialSchema(typeName: string): Promise<Record<string, unknown>> {
     if (this.client?.getCredentialSchema) {
-      return this.client.getCredentialSchema(typeName);
+      try {
+        return await this.client.getCredentialSchema(typeName);
+      } catch {
+        // Public n8n API keys may be allowed to create credentials while still
+        // being denied live schema introspection. Facades must keep working from
+        // the generated n8n ontology in that case.
+      }
     }
 
     const entry = (await this.listCredentialCatalog()).find((candidate) => candidate.typeName === typeName);
@@ -81,7 +87,12 @@ export class N8nCredentialsManager {
 
   async listCredentials(): Promise<N8nCredentialRef[]> {
     if (this.client) {
-      return this.client.listCredentials();
+      try {
+        return await this.client.listCredentials();
+      } catch {
+        // Keep facades usable when a runtime key can create/update credentials
+        // but cannot list them, for example after n8n API scope changes.
+      }
     }
 
     const inventory = await this.store.readInventory().catch(() => createEmptyCredentialInventory());

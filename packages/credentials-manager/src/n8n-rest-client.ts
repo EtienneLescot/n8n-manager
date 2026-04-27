@@ -60,10 +60,8 @@ export class N8nRestCredentialClient implements N8nCredentialClient {
     projectId?: string;
   }): Promise<N8nCredentialRef> {
     const existing = input.id
-      ? (await this.listCredentials()).find((credential) => credential.id === input.id)
-      : (await this.listCredentials()).find((credential) =>
-          credential.name === input.name && credential.type === input.type,
-        );
+      ? { id: input.id }
+      : await this.findExistingCredential(input.name, input.type);
     const payload = {
       name: input.name,
       type: input.type,
@@ -82,6 +80,16 @@ export class N8nRestCredentialClient implements N8nCredentialClient {
       recipeId: input.recipeId,
       service: input.service,
     };
+  }
+
+  private async findExistingCredential(name: string, type: string): Promise<N8nCredentialRef | undefined> {
+    try {
+      return (await this.listCredentials()).find((credential) =>
+        credential.name === name && credential.type === type,
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   async testCredential(credentialId: string): Promise<CredentialTestResult> {

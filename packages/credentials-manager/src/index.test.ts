@@ -67,6 +67,45 @@ test('returns remote n8n credential schemas when a client is configured', async 
   });
 });
 
+test('falls back to the n8n ontology when live schema introspection is unauthorized', async () => {
+  const catalog = [{
+    typeName: 'openAiApi',
+    displayName: 'OpenAI',
+    properties: [{ name: 'apiKey', displayName: 'API Key', required: true }],
+    usedByNodes: [],
+    source: 'n8n-ontology' as const,
+    starterRecipeIds: [],
+  }];
+  const manager = new N8nCredentialsManager({
+    store: new MemoryCredentialStateStore(),
+    catalogProvider: {
+      async listCredentialTypes() {
+        return catalog;
+      },
+      async getCredentialType(typeName) {
+        return catalog.find((entry) => entry.typeName === typeName);
+      },
+    },
+    client: {
+      async listCredentials() {
+        return [];
+      },
+      async getCredentialSchema() {
+        throw new Error('n8n API GET /api/v1/credentials/schema/openAiApi failed with 401: unauthorized');
+      },
+      async upsertCredential(input) {
+        return { id: 'cred-1', name: input.name, type: input.type, recipeId: input.recipeId, service: input.service };
+      },
+    },
+  });
+
+  const schema = await manager.getCredentialSchema('openAiApi');
+  assert.equal(schema.typeName, 'openAiApi');
+  assert.equal(schema.displayName, 'OpenAI');
+  assert.deepEqual(schema.properties, [{ name: 'apiKey', displayName: 'API Key', required: true }]);
+  assert.equal(schema.source, 'n8n-ontology');
+});
+
 test('ensures a credential from a native n8n credential type', async () => {
   const store = new MemoryCredentialStateStore();
   const upserts: unknown[] = [];
@@ -112,6 +151,40 @@ test('ensures a credential from a native n8n credential type', async () => {
   const item = inventory.availableCredentials.find((candidate) => candidate.recipeId === 'openai-native');
   assert.equal(item?.status, 'ready');
   assert.equal(item?.credentialId, 'cred-native');
+});
+
+test('falls back to local inventory when remote credential listing is unauthorized', async () => {
+  const store = new MemoryCredentialStateStore();
+  const manager = new N8nCredentialsManager({
+    store,
+    client: {
+      async listCredentials() {
+        throw new Error('n8n API GET /api/v1/credentials failed with 401: unauthorized');
+      },
+      async upsertCredential(input) {
+        return {
+          id: 'cred-local',
+          name: input.name,
+          type: input.type,
+          recipeId: input.recipeId,
+          service: input.service,
+        };
+      },
+    },
+  });
+
+  await manager.ensureCredential('openai-native', {
+    credentialName: 'OpenAI',
+    values: { apiKey: 'sk-test' },
+  });
+
+  assert.deepEqual(await manager.listCredentials(), [{
+    id: 'cred-local',
+    name: 'OpenAI',
+    type: 'openAiApi',
+    recipeId: 'openai-native',
+    service: 'llm',
+  }]);
 });
 
 test('ensures an LLM proxy credential from a generic source', async () => {
@@ -212,6 +285,38 @@ test('N8nRestCredentialClient patches a credential by id when editing', async ()
   assert.equal(ref.name, 'New name');
   assert.equal(calls.some((call) => call.init.method === 'PATCH'), true);
   assert.equal(calls.some((call) => call.init.method === 'POST'), false);
+});
+
+test('N8nRestCredentialClient creates without prelisting when list is unauthorized', async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    const method = init?.method ?? 'GET';
+    if (method === 'GET' && String(url).endsWith('/api/v1/credentials')) {
+      return jsonResponse({ message: 'unauthorized' }, 401);
+    }
+    if (method === 'POST' && String(url).endsWith('/api/v1/credentials')) {
+      return jsonResponse({ id: 'cred-2', name: 'OpenAI', type: 'openAiApi' });
+    }
+    return jsonResponse({ message: 'unexpected' }, 500);
+  };
+
+  const client = new N8nRestCredentialClient({
+    baseUrl: 'http://127.0.0.1:5678',
+    apiKey: 'key',
+    fetchImpl: fetchImpl as typeof fetch,
+  });
+
+  const ref = await client.upsertCredential({
+    name: 'OpenAI',
+    type: 'openAiApi',
+    data: { apiKey: 'sk-test' },
+    recipeId: 'openai-native',
+    service: 'llm',
+  });
+
+  assert.equal(ref.id, 'cred-2');
+  assert.equal(calls.some((call) => call.init.method === 'POST'), true);
 });
 
 test('N8nRestCredentialClient creates when no matching credential exists', async () => {

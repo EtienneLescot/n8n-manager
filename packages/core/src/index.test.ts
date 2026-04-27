@@ -153,6 +153,7 @@ test('managed-local-docker bootstrap logs in when owner setup already exists', a
   const statePath = path.join(dir, 'instance.json');
   const dockerState: DockerState = { commands: [] };
   const requests: string[] = [];
+  const apiKeyBodies: Array<{ scopes?: string[] }> = [];
   const manager = new FileBackedN8nLifecycleManager(statePath, {
     runner: createDockerRunner(dockerState),
     containerName: 'test-n8n-bootstrap',
@@ -175,6 +176,7 @@ test('managed-local-docker bootstrap logs in when owner setup already exists', a
         });
       }
       if (url.endsWith('/rest/api-keys')) {
+        apiKeyBodies.push(JSON.parse(String(init?.body ?? '{}')) as { scopes?: string[] });
         return Response.json({ data: { rawApiKey: 'n8n_api_test' } });
       }
       return new Response('{}', { status: 200 });
@@ -203,6 +205,67 @@ test('managed-local-docker bootstrap logs in when owner setup already exists', a
   assert.equal(instance.ownerPassword, undefined);
   assert.equal(rawState?.apiKey, 'n8n_api_test');
   assert.equal(rawState?.ownerPassword, 'StoredOwnerPassword1');
+  assert.deepEqual(requests.slice(0, 3), [
+    'POST /rest/owner/setup',
+    'POST /rest/login',
+    'POST /rest/api-keys',
+  ]);
+  assert.ok(apiKeyBodies[0]?.scopes?.includes('credential:read'));
+});
+
+test('managed-local-docker refreshes stored API keys with missing scopes', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-lifecycle-'));
+  const statePath = path.join(dir, 'instance.json');
+  const dockerState: DockerState = { commands: [] };
+  const requests: string[] = [];
+  const manager = new FileBackedN8nLifecycleManager(statePath, {
+    runner: createDockerRunner(dockerState),
+    containerName: 'test-n8n-refresh-key',
+    volumeName: 'test-n8n-refresh-key-data',
+    waitForReady: false,
+    fetch: (async (input, init) => {
+      const url = input.toString();
+      requests.push(`${init?.method ?? 'GET'} ${new URL(url).pathname}`);
+
+      if (url.endsWith('/rest/owner/setup')) {
+        return new Response(JSON.stringify({ message: 'Owner already setup' }), {
+          status: 400,
+          statusText: 'Bad Request',
+        });
+      }
+      if (url.endsWith('/rest/login')) {
+        return new Response('{}', {
+          status: 200,
+          headers: { 'set-cookie': 'n8n-auth=session-cookie; Path=/; HttpOnly' },
+        });
+      }
+      if (url.endsWith('/rest/api-keys')) {
+        return Response.json({ data: { rawApiKey: 'n8n_api_refreshed' } });
+      }
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch,
+  });
+
+  await fs.writeFile(statePath, JSON.stringify({
+    id: 'test-n8n-refresh-key',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5678',
+    provider: 'docker',
+    containerName: 'test-n8n-refresh-key',
+    volumeName: 'test-n8n-refresh-key-data',
+    apiKey: 'n8n_api_old',
+    apiKeyScopes: ['workflow:read'],
+    ownerEmail: 'stored-owner@local.invalid',
+    ownerPassword: 'StoredOwnerPassword1',
+    ownerFirstName: 'Stored',
+    ownerLastName: 'Owner',
+  }, null, 2));
+
+  await manager.setup({ mode: 'managed-local-docker' });
+  const rawState = await readFileBackedN8nInstance(statePath);
+
+  assert.equal(rawState?.apiKey, 'n8n_api_refreshed');
+  assert.ok(rawState?.apiKeyScopes?.includes('credential:read'));
   assert.deepEqual(requests.slice(0, 3), [
     'POST /rest/owner/setup',
     'POST /rest/login',

@@ -111,6 +111,7 @@ const DEFAULT_API_KEY_SCOPES = [
   'workflow:delete',
   'workflow:activate',
   'workflow:deactivate',
+  'credential:read',
   'credential:list',
   'credential:create',
   'credential:update',
@@ -485,7 +486,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     }
 
     const existing = await this.readInstance();
-    if (existing?.apiKey) {
+    if (existing?.apiKey && hasRequiredApiKeyScopes(existing.apiKeyScopes)) {
       return {
         apiKey: existing.apiKey,
         apiKeyScopes: existing.apiKeyScopes,
@@ -514,7 +515,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
         ownerLastName: ownerCredentials.lastName,
       };
     } catch (error) {
-      if (existing?.apiKey) {
+      if (existing?.apiKey && hasRequiredApiKeyScopes(existing.apiKeyScopes)) {
         return {
           apiKey: existing.apiKey,
           apiKeyScopes: existing.apiKeyScopes,
@@ -850,6 +851,10 @@ function buildGeneratedOwnerCredentials(baseUrl: string): ManagedOwnerCredential
 
 function buildApiKeyLabel(attempt: number): string {
   return attempt === 0 ? 'n8n-manager Local Managed' : `n8n-manager Local Managed ${attempt + 1}`;
+}
+
+function hasRequiredApiKeyScopes(scopes?: string[]): boolean {
+  return DEFAULT_API_KEY_SCOPES.every((scope) => scopes?.includes(scope));
 }
 
 function buildUrl(baseUrl: string, pathname: string): string {
