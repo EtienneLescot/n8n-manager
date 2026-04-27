@@ -1,6 +1,9 @@
 import { getCredentialRecipe, listCredentialRecipes, listStarterKits } from './recipes.js';
 import { createEmptyCredentialInventory, FileCredentialStateStore } from './store.js';
+import { createDefaultCredentialCatalogProvider, overlayStarterRecipes } from './catalog.js';
 import type {
+  CredentialCatalogEntry,
+  CredentialCatalogProvider,
   CredentialInventory,
   CredentialInventoryItem,
   CredentialRecipe,
@@ -17,6 +20,7 @@ import type {
 export interface N8nCredentialsManagerOptions {
   store?: CredentialStateStore;
   client?: N8nCredentialClient;
+  catalogProvider?: CredentialCatalogProvider;
   now?: () => Date;
   projectId?: string;
 }
@@ -24,12 +28,14 @@ export interface N8nCredentialsManagerOptions {
 export class N8nCredentialsManager {
   private readonly store: CredentialStateStore;
   private readonly client?: N8nCredentialClient;
+  private readonly catalogProvider: CredentialCatalogProvider;
   private readonly now: () => Date;
   private readonly projectId?: string;
 
   constructor(options: N8nCredentialsManagerOptions = {}) {
     this.store = options.store ?? new FileCredentialStateStore();
     this.client = options.client;
+    this.catalogProvider = options.catalogProvider ?? createDefaultCredentialCatalogProvider();
     this.now = options.now ?? (() => new Date());
     this.projectId = options.projectId;
   }
@@ -40,6 +46,30 @@ export class N8nCredentialsManager {
 
   async listStarterKits(): Promise<StarterKit[]> {
     return listStarterKits();
+  }
+
+  async listCredentialCatalog(): Promise<CredentialCatalogEntry[]> {
+    const catalog = await this.catalogProvider.listCredentialTypes().catch(() => []);
+    return overlayStarterRecipes(catalog);
+  }
+
+  async getCredentialSchema(typeName: string): Promise<Record<string, unknown>> {
+    if (this.client?.getCredentialSchema) {
+      return this.client.getCredentialSchema(typeName);
+    }
+
+    const entry = (await this.listCredentialCatalog()).find((candidate) => candidate.typeName === typeName);
+    if (!entry) {
+      throw new Error(`Unknown n8n credential type: ${typeName}`);
+    }
+
+    return entry.schema ?? {
+      typeName: entry.typeName,
+      displayName: entry.displayName,
+      properties: entry.properties ?? [],
+      usedByNodes: entry.usedByNodes,
+      source: entry.source,
+    };
   }
 
   async getCredentialInventory(): Promise<CredentialInventory> {

@@ -71,6 +71,17 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (command === 'credentials') {
+      if (subcommand === 'catalog') {
+        printJson(await credentials.listCredentialCatalog());
+        return 0;
+      }
+
+      if (subcommand === 'schema') {
+        if (!value) throw new Error('Missing n8n credential type. Example: n8n-manager credentials schema openAiApi');
+        printJson(await credentials.getCredentialSchema(value));
+        return 0;
+      }
+
       if (subcommand === 'recipes') {
         printJson(await credentials.listRecipes());
         return 0;
@@ -204,6 +215,8 @@ Usage:
   n8n-manager restart
   n8n-manager delete [--destroy-data --force]
   n8n-manager credentials list
+  n8n-manager credentials catalog
+  n8n-manager credentials schema <credential-type>
   n8n-manager credentials recipes
   n8n-manager credentials setup <recipe-id> [--name NAME] [--key=value]
   n8n-manager credentials setup <recipe-id> --url URL --api-key KEY [--project-id ID] [--name NAME] [--key=value]

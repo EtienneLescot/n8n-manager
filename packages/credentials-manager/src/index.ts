@@ -2,4 +2,5 @@ export * from './manager.js';
 export * from './n8n-rest-client.js';
 export * from './recipes.js';
 export * from './store.js';
+export * from './catalog.js';
 export * from './types.js';

@@ -46,6 +46,10 @@ export class N8nRestCredentialClient implements N8nCredentialClient {
     return results;
   }
 
+  async getCredentialSchema(typeName: string): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', `/api/v1/credentials/schema/${encodeURIComponent(typeName)}`);
+  }
+
   async upsertCredential(input: {
     name: string;
     type: string;

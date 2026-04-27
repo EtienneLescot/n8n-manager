@@ -55,6 +55,31 @@ export interface CredentialRecipe {
   riskLevel: CredentialRiskLevel;
 }
 
+export interface CredentialNodeUsage {
+  nodeName: string;
+  nodeType?: string;
+  nodeDisplayName?: string;
+  required?: boolean;
+}
+
+export type CredentialCatalogSource = 'n8n-ontology' | 'n8n-api' | 'starter-overlay';
+
+export interface CredentialCatalogEntry {
+  typeName: string;
+  displayName: string;
+  documentationUrl?: string;
+  properties?: unknown[];
+  schema?: Record<string, unknown>;
+  usedByNodes: CredentialNodeUsage[];
+  source: CredentialCatalogSource;
+  starterRecipeIds: string[];
+}
+
+export interface CredentialCatalogProvider {
+  listCredentialTypes(): Promise<CredentialCatalogEntry[]>;
+  getCredentialType(typeName: string): Promise<CredentialCatalogEntry | undefined>;
+}
+
 export interface SecretRef {
   provider: string;
   key: string;
@@ -126,6 +151,7 @@ export interface EnsureCredentialInput {
 
 export interface N8nCredentialClient {
   listCredentials(): Promise<N8nCredentialRef[]>;
+  getCredentialSchema?(typeName: string): Promise<Record<string, unknown>>;
   upsertCredential(input: {
     name: string;
     type: string;

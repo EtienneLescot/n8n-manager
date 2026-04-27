@@ -3,6 +3,7 @@ import test from 'node:test';
 import { MemoryCredentialStateStore } from './store.js';
 import { N8nCredentialsManager } from './manager.js';
 import { N8nRestCredentialClient } from './n8n-rest-client.js';
+import { RecipeCredentialCatalogProvider } from './catalog.js';
 
 test('lists recipes and exposes native LLM credential recipes', async () => {
   const manager = new N8nCredentialsManager({ store: new MemoryCredentialStateStore() });
@@ -28,6 +29,42 @@ test('ensures a native OpenAI credential from an API key', async () => {
   const item = inventory.availableCredentials.find((candidate) => candidate.recipeId === 'openai-native');
   assert.equal(item?.status, 'ready');
   assert.equal(item?.credentialName, 'OpenAI');
+});
+
+test('lists n8n credential catalog entries separately from starter recipes', async () => {
+  const manager = new N8nCredentialsManager({
+    store: new MemoryCredentialStateStore(),
+    catalogProvider: new RecipeCredentialCatalogProvider(),
+  });
+
+  const catalog = await manager.listCredentialCatalog();
+  const openAi = catalog.find((entry) => entry.typeName === 'openAiApi');
+
+  assert.equal(openAi?.source, 'starter-overlay');
+  assert.ok(openAi?.starterRecipeIds.includes('openai-native'));
+  assert.ok(openAi?.starterRecipeIds.includes('llm-proxy'));
+});
+
+test('returns remote n8n credential schemas when a client is configured', async () => {
+  const manager = new N8nCredentialsManager({
+    store: new MemoryCredentialStateStore(),
+    client: {
+      async listCredentials() {
+        return [];
+      },
+      async getCredentialSchema(typeName) {
+        return { typeName, properties: [{ name: 'apiKey', required: true }] };
+      },
+      async upsertCredential(input) {
+        return { id: 'cred-1', name: input.name, type: input.type, recipeId: input.recipeId, service: input.service };
+      },
+    },
+  });
+
+  assert.deepEqual(await manager.getCredentialSchema('openAiApi'), {
+    typeName: 'openAiApi',
+    properties: [{ name: 'apiKey', required: true }],
+  });
 });
 
 test('ensures an LLM proxy credential from a generic source', async () => {

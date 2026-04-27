@@ -2,7 +2,7 @@
 
 n8n-manager provides a ready-to-run n8n environment for humans and AI agents.
 
-It does not just start n8n. It prepares n8n to run useful workflows by owning the infrastructure lifecycle, diagnostics, credential readiness, starter kits, and LLM proxy contract.
+It does not just start n8n. It prepares n8n to run useful workflows by owning the infrastructure lifecycle, diagnostics, credential readiness, starter kits, and native n8n credential operations.
 
 n8n-as-code is an independent community project and is not affiliated with, endorsed by, or sponsored by n8n.
 
@@ -33,7 +33,7 @@ How do you want to use n8n?
 ## Packages
 
 - `@n8n-as-code/n8n-manager-core`: lifecycle and diagnostics contracts.
-- `@n8n-as-code/n8n-credentials-manager`: credential recipes, inventory, starter kits, and LLM source contracts.
+- `@n8n-as-code/n8n-credentials-manager`: n8n-backed credential catalog, inventory, starter overlays, and starter kits.
 - `@n8n-as-code/n8n-manager`: CLI entrypoint.
 
 ## CLI
@@ -47,6 +47,8 @@ n8n-manager stop
 n8n-manager restart
 n8n-manager delete
 n8n-manager credentials list
+n8n-manager credentials catalog
+n8n-manager credentials schema openAiApi
 n8n-manager credentials setup llm-proxy
 n8n-manager credentials delete llm-proxy
 n8n-manager credentials starter-kit ai-workflows
@@ -75,6 +77,12 @@ Destructive operations are supported only when they are explicit and guarded. De
 
 When `N8N_HOST` and `N8N_API_KEY` are set, or when `--url` and `--api-key` are passed, credential setup uses the n8n REST API to list, create, patch, delete, and probe credentials.
 
+Credential type discovery follows n8n as the source of truth:
+
+- live schema introspection uses n8n's `/api/v1/credentials/schema/:type` endpoint when a runtime is configured;
+- local development and offline facades can point `N8N_CREDENTIAL_ONTOLOGY_PATH` to the generated `n8n-credentials-ontology.json` asset from `n8n-as-code`;
+- starter recipes are UX overlays only. They help facades offer common setup flows, but they are not the authority for which credential types exist or which fields n8n accepts.
+
 ## Local development with n8n-as-code
 
-Use `/home/etienne/repos/n8n-ecosystem-dev` for end-to-end local facade testing. It exports `N8N_MANAGER_COMMAND`, `N8N_MANAGER_STATE_PATH`, and `N8NAC_COMMAND` so generated agent instructions can target local builds while published installs keep using `npx --yes n8nac`.
+Use `/home/etienne/repos/n8n-ecosystem-dev` for end-to-end local facade testing. It exports `N8N_MANAGER_COMMAND`, `N8N_MANAGER_STATE_PATH`, `N8NAC_COMMAND`, and `N8N_CREDENTIAL_ONTOLOGY_PATH` so generated agent instructions can target local builds while published installs keep using `npx --yes n8nac`.
