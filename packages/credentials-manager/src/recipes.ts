@@ -5,6 +5,51 @@ const n8nValidation = (description: string) => ({ kind: 'n8n-credential-test' as
 
 export const CREDENTIAL_RECIPES: CredentialRecipe[] = [
   {
+    id: 'openai-native',
+    service: 'llm',
+    label: 'OpenAI',
+    credentialTypeName: 'openAiApi',
+    authMethod: 'api-key',
+    requiredInputs: [
+      { key: 'apiKey', label: 'OpenAI API key', required: true, secret: true },
+      { key: 'url', label: 'Base URL', required: false },
+    ],
+    supportedNodes: ['OpenAI Chat Model', 'OpenAI', 'OpenAI Assistant', 'Embeddings OpenAI'],
+    validation: n8nValidation('Run the native n8n OpenAI credential test.'),
+    setupFlow: { kind: 'manual', steps: ['Provide an OpenAI API key.', 'Optionally provide a custom OpenAI-compatible base URL.', 'Create or update the native n8n credential.'] },
+    frictionLevel: 'low',
+    riskLevel: 'medium',
+  },
+  {
+    id: 'anthropic-native',
+    service: 'llm',
+    label: 'Anthropic',
+    credentialTypeName: 'anthropicApi',
+    authMethod: 'api-key',
+    requiredInputs: [
+      { key: 'apiKey', label: 'Anthropic API key', required: true, secret: true },
+      { key: 'url', label: 'Base URL', required: false },
+    ],
+    supportedNodes: ['Anthropic Chat Model', 'Anthropic'],
+    validation: n8nValidation('Run the native n8n Anthropic credential test.'),
+    setupFlow: { kind: 'manual', steps: ['Provide an Anthropic API key.', 'Optionally provide a custom Anthropic base URL.', 'Create or update the native n8n credential.'] },
+    frictionLevel: 'low',
+    riskLevel: 'medium',
+  },
+  {
+    id: 'google-gemini-native',
+    service: 'llm',
+    label: 'Google Gemini',
+    credentialTypeName: 'googlePalmApi',
+    authMethod: 'api-key',
+    requiredInputs: [{ key: 'apiKey', label: 'Google AI API key', required: true, secret: true }],
+    supportedNodes: ['Google Gemini Chat Model', 'Google Gemini', 'Embeddings Google Gemini'],
+    validation: n8nValidation('Run the native n8n Google Gemini credential test.'),
+    setupFlow: { kind: 'manual', steps: ['Provide a Google AI API key.', 'Create or update the native n8n credential.'] },
+    frictionLevel: 'low',
+    riskLevel: 'medium',
+  },
+  {
     id: 'llm-proxy',
     service: 'llm',
     label: 'LLM Proxy',
@@ -230,7 +275,7 @@ export const CREDENTIAL_RECIPES: CredentialRecipe[] = [
 ];
 
 export const STARTER_KITS: StarterKit[] = [
-  { id: 'ai-workflows', label: 'AI workflows', recipeIds: ['llm-proxy', 'http-header', 'webhook-shared-secret'] },
+  { id: 'ai-workflows', label: 'AI workflows', recipeIds: ['openai-native', 'anthropic-native', 'google-gemini-native', 'http-header', 'webhook-shared-secret'] },
   { id: 'productivity', label: 'Productivity', recipeIds: ['google-oauth', 'notion-token', 'slack-oauth'] },
   { id: 'data', label: 'Data', recipeIds: ['supabase-api-key', 'airtable-pat', 'postgres'] },
   { id: 'dev', label: 'Dev', recipeIds: ['github-pat', 'http-header', 'http-bearer'] },

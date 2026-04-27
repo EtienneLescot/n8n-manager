@@ -4,12 +4,30 @@ import { MemoryCredentialStateStore } from './store.js';
 import { N8nCredentialsManager } from './manager.js';
 import { N8nRestCredentialClient } from './n8n-rest-client.js';
 
-test('lists recipes and exposes the required LLM proxy recipe', async () => {
+test('lists recipes and exposes native LLM credential recipes', async () => {
   const manager = new N8nCredentialsManager({ store: new MemoryCredentialStateStore() });
   const recipes = await manager.listRecipes();
+  assert.ok(recipes.some((recipe) => recipe.id === 'openai-native' && recipe.credentialTypeName === 'openAiApi'));
+  assert.ok(recipes.some((recipe) => recipe.id === 'anthropic-native' && recipe.credentialTypeName === 'anthropicApi'));
+  assert.ok(recipes.some((recipe) => recipe.id === 'google-gemini-native' && recipe.credentialTypeName === 'googlePalmApi'));
   assert.ok(recipes.some((recipe) => recipe.id === 'llm-proxy' && recipe.credentialTypeName === 'openAiApi'));
   assert.ok(recipes.some((recipe) => recipe.id === 'google-oauth'));
   assert.ok(recipes.some((recipe) => recipe.id === 'telegram-bot'));
+});
+
+test('ensures a native OpenAI credential from an API key', async () => {
+  const manager = new N8nCredentialsManager({ store: new MemoryCredentialStateStore() });
+  const ref = await manager.ensureCredential('openai-native', {
+    credentialName: 'OpenAI',
+    values: { apiKey: 'sk-test', url: 'https://api.openai.com/v1' },
+  });
+
+  assert.equal(ref.name, 'OpenAI');
+  assert.equal(ref.type, 'openAiApi');
+  const inventory = await manager.getCredentialInventory();
+  const item = inventory.availableCredentials.find((candidate) => candidate.recipeId === 'openai-native');
+  assert.equal(item?.status, 'ready');
+  assert.equal(item?.credentialName, 'OpenAI');
 });
 
 test('ensures an LLM proxy credential from a generic source', async () => {
