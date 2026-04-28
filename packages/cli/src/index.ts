@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
-import { FileBackedN8nLifecycleManager, type N8nInstanceMode } from '@n8n-as-code/n8n-manager-core';
+import {
+  FileBackedN8nLifecycleManager,
+  N8nConfigurationService,
+  readFileBackedN8nInstance,
+  type GlobalN8nInstance,
+  type N8nInstanceMode,
+} from '@n8n-as-code/n8n-manager-core';
 import {
   N8nCredentialsManager,
   N8nRestCredentialClient,
@@ -10,8 +16,8 @@ import {
 
 export async function runCli(argv = process.argv.slice(2)): Promise<number> {
   const [command, subcommand, value] = argv;
+  const config = new N8nConfigurationService();
   const lifecycle = new FileBackedN8nLifecycleManager(process.env.N8N_MANAGER_STATE_PATH);
-  const credentials = createCredentialsManager(argv);
 
   try {
     if (!command || command === 'help' || command === '--help' || command === '-h') {
@@ -28,8 +34,15 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
         tunnel: argv.includes('--tunnel'),
         bootstrapOwner: !argv.includes('--no-bootstrap-owner'),
       });
+      const privateSnapshot = await readFileBackedN8nInstance(process.env.N8N_MANAGER_STATE_PATH);
+      const stored = config.upsertInstanceFromLifecycle(snapshot, {
+        name: readFlag(argv, '--name'),
+        apiKey: readFlag(argv, '--api-key') ?? privateSnapshot?.apiKey,
+        setActive: true,
+      });
       printJson({
         operation: 'setup',
+        storedInstance: stored,
         instance: snapshot,
         next: mode === 'managed-local-docker'
           ? snapshot.apiKeyAvailable
@@ -41,7 +54,18 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (command === 'status') {
-      printJson(await lifecycle.status());
+      const selected = resolveInstance(config, readFlag(argv, '--instance'));
+      if (selected?.runtimeStatePath) {
+        printJson(await new FileBackedN8nLifecycleManager(selected.runtimeStatePath).status());
+      } else if (selected) {
+        printJson({
+          status: selected.mode === 'generation-only' ? 'stopped' : 'ready',
+          instance: toPublicInstance(selected),
+          checks: [{ id: 'instance', label: 'n8n instance', status: 'pass', message: 'Global instance configuration is present.' }],
+        });
+      } else {
+        printJson(config.getGlobalConfig());
+      }
       return 0;
     }
 
@@ -66,11 +90,76 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       if (destroyData && !force) {
         throw new Error('Refusing to destroy n8n data without --force.');
       }
-      printJson(await lifecycle.delete({ destroyData, force }));
+      const selected = resolveInstance(config, readFlag(argv, '--instance'));
+      if (selected?.runtimeStatePath) {
+        printJson(await new FileBackedN8nLifecycleManager(selected.runtimeStatePath).delete({ destroyData, force }));
+      } else {
+        printJson(await lifecycle.delete({ destroyData, force }));
+      }
       return 0;
     }
 
+    if (command === 'instances') {
+      if (subcommand === 'list' || !subcommand) {
+        printJson(config.getGlobalConfig());
+        return 0;
+      }
+
+      if (subcommand === 'add') {
+        const baseUrl = readFlag(argv, '--url');
+        const apiKey = readFlag(argv, '--api-key');
+        const mode = parseMode(readFlag(argv, '--mode') ?? 'existing');
+        const instance = config.upsertInstance({
+          id: readFlag(argv, '--id'),
+          name: readFlag(argv, '--name'),
+          mode,
+          baseUrl,
+          apiKey,
+        }, { setActive: !argv.includes('--no-select') });
+        printJson({ operation: 'instances.add', instance });
+        return 0;
+      }
+
+      if (subcommand === 'select') {
+        if (!value) throw new Error('Missing instance id or name. Example: n8n-manager instances select production');
+        const instance = resolveInstance(config, value, { required: true });
+        if (!instance) throw new Error(`Unknown n8n instance: ${value}`);
+        printJson({ operation: 'instances.select', instance: config.setGlobalActiveInstance(instance.id) });
+        return 0;
+      }
+
+      if (subcommand === 'delete') {
+        if (!value) throw new Error('Missing instance id or name. Example: n8n-manager instances delete production');
+        const destroyData = argv.includes('--destroy-data');
+        const force = argv.includes('--force');
+        if (destroyData && !force) {
+          throw new Error('Refusing to destroy n8n data without --force.');
+        }
+        const instance = resolveInstance(config, value, { required: true });
+        if (!instance) throw new Error(`Unknown n8n instance: ${value}`);
+        if (destroyData && instance.runtimeStatePath) {
+          await new FileBackedN8nLifecycleManager(instance.runtimeStatePath).delete({ destroyData, force });
+        }
+        printJson({ operation: 'instances.delete', result: config.deleteInstance(instance.id) });
+        return 0;
+      }
+    }
+
+    if (command === 'config') {
+      if (subcommand === 'get' || !subcommand) {
+        printJson(config.getGlobalConfig());
+        return 0;
+      }
+
+      if (subcommand === 'set-sync-folder') {
+        if (!value) throw new Error('Missing sync folder. Example: n8n-manager config set-sync-folder ~/.n8n-manager/workflows');
+        printJson(config.setDefaultSyncFolder(value));
+        return 0;
+      }
+    }
+
     if (command === 'credentials') {
+      const credentials = createCredentialsManager(argv, config);
       if (subcommand === 'catalog') {
         printJson(await credentials.listCredentialCatalog());
         return 0;
@@ -126,8 +215,9 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (command === 'llm-proxy' && subcommand === 'status') {
+      const credentials = createCredentialsManager(argv, config);
       const inventory = await credentials.getCredentialInventory();
-      const item = inventory.availableCredentials.find((candidate) => candidate.recipeId === 'llm-proxy');
+      const item = inventory.availableCredentials.find((candidate: CredentialInventoryItem) => candidate.recipeId === 'llm-proxy');
       printJson({
         configured: item?.status === 'ready',
         credentialName: item?.credentialName ?? null,
@@ -156,7 +246,10 @@ function parseMode(value: string): N8nInstanceMode {
 
 function readFlag(argv: string[], flag: string): string | undefined {
   const index = argv.indexOf(flag);
-  return index >= 0 ? argv[index + 1] : undefined;
+  if (index >= 0) return argv[index + 1];
+  const prefix = `${flag}=`;
+  const match = argv.find((arg) => arg.startsWith(prefix));
+  return match ? match.slice(prefix.length) : undefined;
 }
 
 function parseKeyValueFlags(argv: string[]): Record<string, string> {
@@ -169,24 +262,53 @@ function parseKeyValueFlags(argv: string[]): Record<string, string> {
   return values;
 }
 
-function createCredentialsManager(argv: string[]): N8nCredentialsManager {
-  const managed = readManagedInstance();
-  const host = readFlag(argv, '--url') ?? process.env.N8N_HOST ?? managed?.baseUrl;
-  const apiKey = readFlag(argv, '--api-key') ?? process.env.N8N_API_KEY ?? managed?.apiKey;
-  const projectId = readFlag(argv, '--project-id') ?? process.env.N8N_PROJECT_ID;
+function createCredentialsManager(argv: string[], config = new N8nConfigurationService()): N8nCredentialsManager {
+  const selected = resolveInstance(config, readFlag(argv, '--instance'));
+  const effective = selected
+    ? config.resolveEffectiveContext({ instanceId: selected.id })
+    : tryResolveEffectiveContext(config);
+  const host = readFlag(argv, '--url') ?? effective?.host ?? process.env.N8N_HOST;
+  const apiKey = readFlag(argv, '--api-key') ?? effective?.apiKey ?? process.env.N8N_API_KEY;
+  const projectId = readFlag(argv, '--project-id') ?? effective?.projectId ?? process.env.N8N_PROJECT_ID;
   const client = host && apiKey ? new N8nRestCredentialClient({ baseUrl: host, apiKey }) : undefined;
   return new N8nCredentialsManager({ client, projectId });
 }
 
-function readManagedInstance(): { baseUrl?: string; apiKey?: string } | undefined {
-  const statePath = process.env.N8N_MANAGER_STATE_PATH;
-  if (!statePath) return undefined;
-
+function tryResolveEffectiveContext(config: N8nConfigurationService) {
   try {
-    return JSON.parse(fs.readFileSync(statePath, 'utf8')) as { baseUrl?: string; apiKey?: string };
+    return config.resolveEffectiveContext();
   } catch {
     return undefined;
   }
+}
+
+function resolveInstance(
+  config: N8nConfigurationService,
+  selector?: string,
+  options: { required?: boolean } = {},
+): GlobalN8nInstance | undefined {
+  const instances = config.listInstances();
+  if (!selector) {
+    const active = config.getGlobalActiveInstance();
+    if (!active && options.required) throw new Error('No active n8n instance is configured.');
+    return active;
+  }
+
+  const byId = instances.find((instance) => instance.id === selector);
+  if (byId) return byId;
+
+  const matches = instances.filter((instance) => instance.name.toLowerCase() === selector.toLowerCase());
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) throw new Error(`Ambiguous n8n instance name: ${selector}. Use an instance id.`);
+  if (options.required) throw new Error(`Unknown n8n instance: ${selector}`);
+  return undefined;
+}
+
+function toPublicInstance(instance: GlobalN8nInstance): Record<string, unknown> {
+  return {
+    ...instance,
+    apiKeyAvailable: Boolean(instance.apiKeyAvailable),
+  };
 }
 
 function printCredentialInventory(items: CredentialInventoryItem[]): void {
@@ -209,6 +331,12 @@ function printHelp(): void {
 
 Usage:
   n8n-manager setup --mode generation-only|managed-local-docker|managed-local-direct|existing [--url URL] [--tunnel] [--no-bootstrap-owner]
+  n8n-manager instances list
+  n8n-manager instances add --name NAME --mode existing --url URL --api-key KEY
+  n8n-manager instances select <id-or-name>
+  n8n-manager instances delete <id-or-name> [--destroy-data --force]
+  n8n-manager config get
+  n8n-manager config set-sync-folder <path>
   n8n-manager status
   n8n-manager start
   n8n-manager stop

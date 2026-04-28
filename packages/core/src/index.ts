@@ -8,6 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
+export * from './configuration-service.js';
+
 export type N8nInstanceMode = 'managed-local-docker' | 'managed-local-direct' | 'existing' | 'generation-only';
 
 export type N8nInstanceStatus = 'unknown' | 'not-configured' | 'starting' | 'ready' | 'unhealthy' | 'stopped';
@@ -16,6 +18,7 @@ export interface N8nInstanceRef {
   id: string;
   mode: N8nInstanceMode;
   baseUrl?: string;
+  runtimeStatePath?: string;
   apiKeyRef?: string;
   projectName?: string;
   provider?: 'docker' | 'external' | 'none';
@@ -193,7 +196,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
   private readonly waitForReady: boolean;
 
   constructor(
-    private readonly statePath = path.join(os.homedir(), '.n8n-manager', 'instance.json'),
+    private readonly statePath = resolveFileBackedN8nStatePath(),
     options: FileBackedN8nLifecycleManagerOptions = {},
   ) {
     this.runner = options.runner ?? defaultRunner;
@@ -234,6 +237,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       id: input.mode === 'managed-local-docker' ? this.containerName : (input.baseUrl ?? input.mode),
       mode: input.mode,
       baseUrl,
+      runtimeStatePath: this.statePath,
       apiKeyRef: ownerBootstrap?.apiKey ? 'managed-local-owner-api-key' : input.apiKeyRef,
       provider: input.mode === 'managed-local-docker'
         ? 'docker'
@@ -486,14 +490,17 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
 
     const existing = await this.readInstance();
     if (existing?.apiKey && hasRequiredApiKeyScopes(existing.apiKeyScopes)) {
-      return {
-        apiKey: existing.apiKey,
-        apiKeyScopes: existing.apiKeyScopes,
-        ownerEmail: existing.ownerEmail,
-        ownerPassword: existing.ownerPassword,
-        ownerFirstName: existing.ownerFirstName,
-        ownerLastName: existing.ownerLastName,
-      };
+      const usable = await this.isApiKeyUsable(baseUrl, existing.apiKey);
+      if (usable) {
+        return {
+          apiKey: existing.apiKey,
+          apiKeyScopes: existing.apiKeyScopes,
+          ownerEmail: existing.ownerEmail,
+          ownerPassword: existing.ownerPassword,
+          ownerFirstName: existing.ownerFirstName,
+          ownerLastName: existing.ownerLastName,
+        };
+      }
     }
 
     const ownerCredentials = await this.resolveManagedOwnerCredentials(baseUrl, existing);
@@ -514,17 +521,73 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
         ownerLastName: ownerCredentials.lastName,
       };
     } catch (error) {
+      const resetBootstrap = await this.tryResetManagedOwnerAndBootstrap(baseUrl, ownerCredentials, error);
+      if (resetBootstrap) {
+        return resetBootstrap;
+      }
+
       if (existing?.apiKey && hasRequiredApiKeyScopes(existing.apiKeyScopes)) {
-        return {
-          apiKey: existing.apiKey,
-          apiKeyScopes: existing.apiKeyScopes,
-          ownerEmail: existing.ownerEmail,
-          ownerPassword: existing.ownerPassword,
-          ownerFirstName: existing.ownerFirstName,
-          ownerLastName: existing.ownerLastName,
-        };
+        const usable = await this.isApiKeyUsable(baseUrl, existing.apiKey);
+        if (usable) {
+          return {
+            apiKey: existing.apiKey,
+            apiKeyScopes: existing.apiKeyScopes,
+            ownerEmail: existing.ownerEmail,
+            ownerPassword: existing.ownerPassword,
+            ownerFirstName: existing.ownerFirstName,
+            ownerLastName: existing.ownerLastName,
+          };
+        }
       }
       throw new Error(`Managed local n8n is running, but owner/API key bootstrap failed: ${formatCommandError(error)}`);
+    }
+  }
+
+  private async tryResetManagedOwnerAndBootstrap(
+    baseUrl: string,
+    ownerCredentials: ManagedOwnerCredentials,
+    originalError: unknown,
+  ): Promise<ManagedOwnerBootstrap | undefined> {
+    if (process.env.N8N_MANAGER_RESET_STALE_OWNER === 'false') {
+      return undefined;
+    }
+
+    const message = formatCommandError(originalError).toLowerCase();
+    const staleOwnerCredentials = message.includes('wrong username or password')
+      || message.includes('owner login failed with 401')
+      || message.includes('owner login failed with 429');
+    if (!staleOwnerCredentials) {
+      return undefined;
+    }
+
+    await this.runner('docker', ['exec', this.containerName, 'n8n', 'user-management:reset']);
+    if (this.waitForReady) {
+      await this.waitForN8nReady(baseUrl);
+    }
+
+    const sessionCookie = await retryBootstrapStep('owner setup after user reset', async () => {
+      return await this.setupOwner(baseUrl, ownerCredentials);
+    });
+    const apiKey = await retryBootstrapStep('api key creation after user reset', async () => await this.createApiKey(baseUrl, sessionCookie));
+    await this.finalizeManagedLocalN8nReadiness(baseUrl, sessionCookie, ownerCredentials.email);
+    return {
+      apiKey,
+      apiKeyScopes: DEFAULT_API_KEY_SCOPES,
+      ownerEmail: ownerCredentials.email,
+      ownerPassword: ownerCredentials.password,
+      ownerFirstName: ownerCredentials.firstName,
+      ownerLastName: ownerCredentials.lastName,
+    };
+  }
+
+  private async isApiKeyUsable(baseUrl: string, apiKey: string): Promise<boolean> {
+    try {
+      const response = await this.fetcher(buildUrl(baseUrl, '/api/v1/workflows'), {
+        headers: { 'X-N8N-API-KEY': apiKey },
+      });
+      return response.ok;
+    } catch {
+      return false;
     }
   }
 
@@ -693,6 +756,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       id: existing?.id ?? this.containerName,
       mode: existing?.mode ?? 'managed-local-docker',
       baseUrl: existing?.baseUrl ?? baseUrl,
+      runtimeStatePath: existing?.runtimeStatePath ?? this.statePath,
       apiKeyRef: existing?.apiKeyRef,
       projectName: existing?.projectName,
       provider: existing?.provider ?? 'docker',
@@ -795,15 +859,25 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
 }
 
 export async function readFileBackedN8nInstance(
-  statePath = path.join(os.homedir(), '.n8n-manager', 'instance.json'),
+  statePath?: string,
 ): Promise<N8nInstanceRef | undefined> {
   try {
-    const content = await fs.readFile(statePath, 'utf-8');
+    const content = await fs.readFile(resolveFileBackedN8nStatePath(statePath), 'utf-8');
     const parsed = JSON.parse(content) as N8nInstanceRef;
     return parsed.id && parsed.mode ? parsed : undefined;
   } catch {
     return undefined;
   }
+}
+
+export function resolveFileBackedN8nStatePath(statePath?: string): string {
+  const explicitStatePath = statePath?.trim() || process.env.N8N_MANAGER_STATE_PATH?.trim();
+  if (explicitStatePath) {
+    return path.resolve(explicitStatePath);
+  }
+
+  const explicitHome = process.env.N8N_MANAGER_HOME?.trim();
+  return path.join(explicitHome ? path.resolve(explicitHome) : path.join(os.homedir(), '.n8n-manager'), 'instance.json');
 }
 
 function formatCommandError(error: unknown): string {
@@ -890,10 +964,25 @@ async function retryBootstrapStep<T>(label: string, action: () => Promise<T>): P
       return await action();
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      if (!isBootstrapRetryable(lastError)) {
+        throw lastError;
+      }
       await delay(DEFAULT_RETRY_DELAY_MS);
     }
   }
   throw new Error(`${label} failed: ${lastError?.message ?? 'timeout'}`);
+}
+
+function isBootstrapRetryable(error: Error): boolean {
+  const message = error.message.toLowerCase();
+  if (message.includes('wrong username or password') || message.includes('failed with 401')) {
+    return false;
+  }
+  return message.includes('failed with 404')
+    || message.includes('failed with 429')
+    || message.includes('failed with 502')
+    || message.includes('failed with 503')
+    || message.includes('did not return an authenticated n8n session cookie');
 }
 
 function delay(ms: number): Promise<void> {

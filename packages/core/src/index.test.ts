@@ -67,6 +67,10 @@ function createDockerRunner(state: DockerState): FileBackedN8nLifecycleManagerOp
       return { stdout: args.at(-1) + '\n', stderr: '' };
     }
 
+    if (args[0] === 'exec') {
+      return { stdout: '', stderr: '' };
+    }
+
     throw new Error(`Unexpected docker args: ${args.join(' ')}`);
   };
 }
@@ -272,3 +276,97 @@ test('managed-local-docker refreshes stored API keys with missing scopes', async
     'POST /rest/api-keys',
   ]);
 });
+
+test('managed-local-docker resets stale owner credentials before recreating API key', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-lifecycle-'));
+  const statePath = path.join(dir, 'instance.json');
+  const dockerState: DockerState = { exists: true, running: true, commands: [] };
+  const requests: string[] = [];
+  let resetDone = false;
+  const dockerRunner = createDockerRunner(dockerState);
+  const manager = new FileBackedN8nLifecycleManager(statePath, {
+    runner: async (command, args) => {
+      const result = await dockerRunner?.(command, args);
+      if (args[0] === 'exec' && args.includes('user-management:reset')) {
+        resetDone = true;
+      }
+      return result ?? { stdout: '', stderr: '' };
+    },
+    containerName: 'test-n8n-stale-owner',
+    volumeName: 'test-n8n-stale-owner-data',
+    waitForReady: false,
+    fetch: (async (input, init) => {
+      const url = input.toString();
+      requests.push(`${init?.method ?? 'GET'} ${new URL(url).pathname}`);
+
+      if (url.endsWith('/api/v1/workflows')) {
+        return new Response(JSON.stringify({ message: 'unauthorized' }), { status: 401 });
+      }
+      if (url.endsWith('/rest/owner/setup')) {
+        return resetDone
+          ? new Response('{}', {
+            status: 200,
+            headers: { 'set-cookie': 'n8n-auth=reset-session-cookie; Path=/; HttpOnly' },
+          })
+          : new Response(JSON.stringify({ message: 'Owner already setup' }), {
+            status: 400,
+            statusText: 'Bad Request',
+          });
+      }
+      if (url.endsWith('/rest/login')) {
+        return new Response(JSON.stringify({ message: 'Wrong username or password' }), {
+          status: 401,
+          statusText: 'Unauthorized',
+        });
+      }
+      if (url.endsWith('/rest/api-keys')) {
+        return Response.json({ data: { rawApiKey: 'n8n_api_after_reset' } });
+      }
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch,
+  });
+
+  await fs.writeFile(statePath, JSON.stringify({
+    id: 'test-n8n-stale-owner',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5678',
+    provider: 'docker',
+    containerName: 'test-n8n-stale-owner',
+    volumeName: 'test-n8n-stale-owner-data',
+    apiKey: 'n8n_api_stale',
+    apiKeyScopes: DEFAULT_TEST_API_KEY_SCOPES,
+    ownerEmail: 'stored-owner@local.invalid',
+    ownerPassword: 'StoredOwnerPassword1',
+    ownerFirstName: 'Stored',
+    ownerLastName: 'Owner',
+  }, null, 2));
+
+  await manager.setup({ mode: 'managed-local-docker' });
+  const rawState = await readFileBackedN8nInstance(statePath);
+
+  assert.equal(rawState?.apiKey, 'n8n_api_after_reset');
+  assert.ok(dockerState.commands.includes('docker exec test-n8n-stale-owner n8n user-management:reset'));
+  assert.deepEqual(requests.filter((request) => request.includes('/rest/owner/setup')), [
+    'POST /rest/owner/setup',
+    'POST /rest/owner/setup',
+  ]);
+});
+
+const DEFAULT_TEST_API_KEY_SCOPES = [
+  'user:read',
+  'user:list',
+  'project:list',
+  'workflow:read',
+  'workflow:list',
+  'workflow:create',
+  'workflow:update',
+  'workflow:delete',
+  'workflow:activate',
+  'workflow:deactivate',
+  'credential:list',
+  'credential:create',
+  'credential:update',
+  'credential:delete',
+  'execution:read',
+  'execution:list',
+];
