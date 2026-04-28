@@ -98,6 +98,15 @@ function recipeToCatalogEntry(recipe: CredentialRecipe): CredentialCatalogEntry 
   return {
     typeName: recipe.credentialTypeName,
     displayName: recipe.label,
+    properties: recipe.requiredInputs.map((input) => ({
+      displayName: input.label,
+      name: input.key,
+      type: 'string',
+      typeOptions: input.secret ? { password: true } : undefined,
+      required: input.required,
+      default: '',
+      description: input.description,
+    })),
     usedByNodes: recipe.supportedNodes.map((nodeDisplayName) => ({ nodeName: nodeDisplayName, nodeDisplayName })),
     source: 'starter-overlay',
     starterRecipeIds: [recipe.id],

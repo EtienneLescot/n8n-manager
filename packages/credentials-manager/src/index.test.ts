@@ -43,6 +43,11 @@ test('lists n8n credential catalog entries separately from starter recipes', asy
   assert.equal(openAi?.source, 'starter-overlay');
   assert.ok(openAi?.starterRecipeIds.includes('openai-native'));
   assert.ok(openAi?.starterRecipeIds.includes('llm-proxy'));
+  assert.ok(openAi?.properties?.some((property) =>
+    typeof property === 'object'
+    && property !== null
+    && (property as { name?: string }).name === 'apiKey',
+  ));
 });
 
 test('returns remote n8n credential schemas when a client is configured', async () => {
