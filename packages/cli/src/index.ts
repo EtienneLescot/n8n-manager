@@ -4,14 +4,19 @@ import path from 'node:path';
 import {
   FileBackedN8nLifecycleManager,
   N8nConfigurationService,
+  N8nRuntimeOrchestrator,
   createManagedLocalLifecycleManager,
   ensureLocalN8nAuthBridgeRunning,
   getN8nManagerAgentInstructions,
   getLocalN8nAuthBridgeStatus,
+  listN8nProjects,
   presentWorkflowResult,
   readFileBackedN8nInstance,
+  testN8nApiConnection,
   type GlobalN8nInstance,
   type N8nInstanceMode,
+  type N8nProjectSnapshot,
+  type N8nTunnelAction,
 } from '@n8n-as-code/n8n-manager-core';
 import {
   N8nCredentialsManager,
@@ -20,9 +25,18 @@ import {
   type CredentialInventoryItem,
 } from '@n8n-as-code/n8n-credentials-manager';
 
+async function readSecretFromStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8').trim().replace(/^['"]|['"]$/g, '');
+}
+
 export async function runCli(argv = process.argv.slice(2)): Promise<number> {
   const [command, subcommand, value] = argv;
   const config = new N8nConfigurationService();
+  const runtime = new N8nRuntimeOrchestrator({ configuration: config });
   const lifecycle = new FileBackedN8nLifecycleManager(process.env.N8N_MANAGER_STATE_PATH);
 
   try {
@@ -68,33 +82,30 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (command === 'status') {
-      const selected = resolveInstance(config, readFlag(argv, '--instance'));
-      if (selected?.runtimeStatePath) {
-        printJson(await new FileBackedN8nLifecycleManager(selected.runtimeStatePath).status());
-      } else if (selected) {
-        printJson({
-          status: selected.mode === 'generation-only' ? 'stopped' : 'ready',
-          instance: toPublicInstance(selected),
-          checks: [{ id: 'instance', label: 'n8n instance', status: 'pass', message: 'Global instance configuration is present.' }],
-        });
-      } else {
-        printJson(config.getGlobalConfig());
-      }
+      const selected = resolveInstance(config, readFlag(argv, '--instance'), { required: true });
+      if (!selected) throw new Error('No active n8n instance is configured.');
+      printJson(await runtime.getRuntimeStatus(selected.id));
       return 0;
     }
 
     if (command === 'start') {
-      printJson(await lifecycle.start());
+      const selected = resolveInstance(config, readFlag(argv, '--instance'), { required: true });
+      if (!selected) throw new Error('No active n8n instance is configured.');
+      printJson(await runtime.startInstance(selected.id));
       return 0;
     }
 
     if (command === 'stop') {
-      printJson(await lifecycle.stop());
+      const selected = resolveInstance(config, readFlag(argv, '--instance'), { required: true });
+      if (!selected) throw new Error('No active n8n instance is configured.');
+      printJson(await runtime.stopInstance(selected.id));
       return 0;
     }
 
     if (command === 'restart') {
-      printJson(await lifecycle.restart());
+      const selected = resolveInstance(config, readFlag(argv, '--instance'), { required: true });
+      if (!selected) throw new Error('No active n8n instance is configured.');
+      printJson(await runtime.restartInstance(selected.id));
       return 0;
     }
 
@@ -104,12 +115,9 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       if (destroyData && !force) {
         throw new Error('Refusing to destroy n8n data without --force.');
       }
-      const selected = resolveInstance(config, readFlag(argv, '--instance'));
-      if (selected?.runtimeStatePath) {
-        printJson(await new FileBackedN8nLifecycleManager(selected.runtimeStatePath).delete({ destroyData, force }));
-      } else {
-        printJson(await lifecycle.delete({ destroyData, force }));
-      }
+      const selected = resolveInstance(config, readFlag(argv, '--instance'), { required: true });
+      if (!selected) throw new Error('No active n8n instance is configured.');
+      printJson(await runtime.deleteInstanceRuntime(selected.id, { destroyData, force }));
       return 0;
     }
 
@@ -161,6 +169,70 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
         return 0;
       }
 
+      if (subcommand === 'status') {
+        const instance = resolveInstance(config, value, { required: true });
+        if (!instance) throw new Error(`Unknown n8n instance: ${value}`);
+        printJson(await runtime.getRuntimeStatus(instance.id));
+        return 0;
+      }
+
+      if (subcommand === 'setup') {
+        const instance = resolveInstance(config, value, { required: true });
+        if (!instance) throw new Error(`Unknown n8n instance: ${value}`);
+        printJson(await runtime.setupInstance(instance.id, {
+          tunnel: argv.includes('--tunnel') || Boolean(instance.tunnelPublicUrl || instance.tunnelTargetUrl),
+          bootstrapOwner: !argv.includes('--no-bootstrap-owner'),
+        }));
+        return 0;
+      }
+
+      if (subcommand === 'start') {
+        const instance = resolveInstance(config, value, { required: true });
+        if (!instance) throw new Error(`Unknown n8n instance: ${value}`);
+        printJson(await runtime.startInstance(instance.id));
+        return 0;
+      }
+
+      if (subcommand === 'stop') {
+        const instance = resolveInstance(config, value, { required: true });
+        if (!instance) throw new Error(`Unknown n8n instance: ${value}`);
+        printJson(await runtime.stopInstance(instance.id));
+        return 0;
+      }
+
+      if (subcommand === 'restart') {
+        const instance = resolveInstance(config, value, { required: true });
+        if (!instance) throw new Error(`Unknown n8n instance: ${value}`);
+        printJson(await runtime.restartInstance(instance.id));
+        return 0;
+      }
+
+      if (subcommand === 'tunnel') {
+        const tunnelCommand = value;
+        const selector = argv[3];
+        if (!tunnelCommand) throw new Error('Missing tunnel command. Example: n8n-manager instances tunnel status local');
+        const instance = resolveInstance(config, selector, { required: true });
+        if (!instance) throw new Error(`Unknown n8n instance: ${selector}`);
+        if (tunnelCommand === 'status') {
+          printJson((await runtime.getRuntimeStatus(instance.id)).tunnel ?? { enabled: false, running: false });
+          return 0;
+        }
+        if (tunnelCommand === 'url') {
+          const status = await runtime.getRuntimeStatus(instance.id);
+          printJson({ url: status.tunnel?.publicUrl ?? null, running: status.tunnel?.running ?? false });
+          return 0;
+        }
+        if (tunnelCommand === 'stop') {
+          printJson(await runtime.stopTunnel(instance.id));
+          return 0;
+        }
+        if (tunnelCommand === 'start' || tunnelCommand === 'ensure' || tunnelCommand === 'refresh') {
+          printJson(await runtime.ensureTunnel(instance.id, { action: tunnelCommand as N8nTunnelAction }));
+          return 0;
+        }
+        throw new Error(`Unknown tunnel command: ${tunnelCommand}`);
+      }
+
       if (subcommand === 'delete') {
         if (!value) throw new Error('Missing instance id or name. Example: n8n-manager instances delete production');
         const destroyData = argv.includes('--destroy-data');
@@ -171,7 +243,9 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
         const instance = resolveInstance(config, value, { required: true });
         if (!instance) throw new Error(`Unknown n8n instance: ${value}`);
         if (destroyData && instance.runtimeStatePath) {
-          await new FileBackedN8nLifecycleManager(instance.runtimeStatePath).delete({ destroyData, force });
+          await runtime.deleteInstanceRuntime(instance.id, { destroyData, force });
+        } else if (instance.mode === 'managed-local-docker') {
+          await runtime.cleanupInstanceProcesses(instance.id);
         }
         printJson({ operation: 'instances.delete', result: config.deleteInstance(instance.id) });
         return 0;
@@ -187,6 +261,66 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       if (subcommand === 'set-sync-folder') {
         if (!value) throw new Error('Missing sync folder. Example: n8n-manager config set-sync-folder ~/.n8n-manager/workflows');
         printJson(config.setDefaultSyncFolder(value));
+        return 0;
+      }
+    }
+
+    if (command === 'auth') {
+      if (subcommand === 'set') {
+        const baseUrl = readFlag(argv, '--url');
+        const apiKey = readFlag(argv, '--api-key') ?? (argv.includes('--api-key-stdin') ? await readSecretFromStdin() : undefined);
+        if (!baseUrl) throw new Error('Missing n8n URL. Example: n8n-manager auth set --url http://localhost:5678 --api-key KEY');
+        if (!apiKey) throw new Error('Missing n8n API key. Example: n8n-manager auth set --url http://localhost:5678 --api-key-stdin');
+        await testN8nApiConnection({ baseUrl, apiKey });
+        const instance = config.upsertInstance({
+          id: readFlag(argv, '--id'),
+          name: readFlag(argv, '--name'),
+          mode: 'existing',
+          baseUrl,
+          apiKey,
+        }, { setActive: !argv.includes('--no-select') });
+        printJson({ operation: 'auth.set', instance });
+        return 0;
+      }
+
+      if (subcommand === 'test' || !subcommand) {
+        const selected = resolveInstance(config, readFlag(argv, '--instance'));
+        const context = selected
+          ? config.resolveEffectiveContext({ instanceId: selected.id })
+          : config.resolveEffectiveContext();
+        const baseUrl = readFlag(argv, '--url') ?? context.host;
+        const apiKey = readFlag(argv, '--api-key') ?? context.apiKey;
+        if (!baseUrl || !apiKey) throw new Error('Missing n8n URL or API key.');
+        await testN8nApiConnection({ baseUrl, apiKey });
+        printJson({ operation: 'auth.test', ok: true, instanceId: context.activeInstanceId, host: baseUrl });
+        return 0;
+      }
+    }
+
+    if (command === 'projects') {
+      const selected = resolveInstance(config, readFlag(argv, '--instance'));
+      const context = selected
+        ? config.resolveEffectiveContext({ instanceId: selected.id })
+        : config.resolveEffectiveContext();
+      if (!context.host || !context.apiKey) {
+        throw new Error(`Instance "${context.activeInstanceName}" needs a host and API key before projects can be loaded.`);
+      }
+      const projects = await listN8nProjects({ baseUrl: context.host, apiKey: context.apiKey });
+
+      if (subcommand === 'list' || !subcommand) {
+        printJson({ operation: 'projects.list', instanceId: context.activeInstanceId, projects });
+        return 0;
+      }
+
+      if (subcommand === 'select') {
+        if (!value) throw new Error('Missing project id or name. Example: n8n-manager projects select personal');
+        const project = resolveProject(projects, value);
+        if (!project) throw new Error(`Unknown n8n project: ${value}`);
+        const instance = config.setInstanceDefaultProject(context.activeInstanceId, {
+          id: project.id,
+          name: displayProjectName(project),
+        });
+        printJson({ operation: 'projects.select', instance, project: instance.defaultProject });
         return 0;
       }
     }
@@ -234,7 +368,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (command === 'credentials') {
-      const credentials = createCredentialsManager(argv, config);
+      const credentials = await createCredentialsManager(argv, config);
       if (subcommand === 'catalog') {
         printJson(await credentials.listCredentialCatalog());
         return 0;
@@ -290,7 +424,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if ((command === 'llm-proxy' && subcommand === 'status') || command === 'yagrProxy') {
-      const credentials = createCredentialsManager(argv, config);
+      const credentials = await createCredentialsManager(argv, config);
       const inventory = await credentials.getCredentialInventory();
       const item = inventory.availableCredentials.find((candidate: CredentialInventoryItem) => candidate.recipeId === 'llm-proxy');
       printJson({
@@ -330,18 +464,16 @@ function readFlag(argv: string[], flag: string): string | undefined {
 function parseKeyValueFlags(argv: string[]): Record<string, string> {
   const values: Record<string, string> = {};
   for (const arg of argv) {
-    if (!arg.startsWith('--') || arg === '--mode' || arg === '--url' || arg === '--name' || arg === '--api-key' || arg === '--project-id') continue;
+    if (!arg.startsWith('--') || arg === '--mode' || arg === '--url' || arg === '--name' || arg === '--api-key' || arg === '--project-id' || arg === '--instance') continue;
     const [key, value] = arg.slice(2).split('=', 2);
     if (key && value !== undefined) values[key] = value;
   }
   return values;
 }
 
-function createCredentialsManager(argv: string[], config = new N8nConfigurationService()): N8nCredentialsManager {
+async function createCredentialsManager(argv: string[], config = new N8nConfigurationService()): Promise<N8nCredentialsManager> {
   const selected = resolveInstance(config, readFlag(argv, '--instance'));
-  const effective = selected
-    ? config.resolveEffectiveContext({ instanceId: selected.id })
-    : tryResolveEffectiveContext(config);
+  const effective = await tryPrepareEffectiveContext(config, selected?.id);
   const host = readFlag(argv, '--url') ?? effective?.host ?? process.env.N8N_HOST;
   const apiKey = readFlag(argv, '--api-key') ?? effective?.apiKey ?? process.env.N8N_API_KEY;
   const projectId = readFlag(argv, '--project-id') ?? effective?.projectId ?? process.env.N8N_PROJECT_ID;
@@ -349,9 +481,15 @@ function createCredentialsManager(argv: string[], config = new N8nConfigurationS
   return new N8nCredentialsManager({ client, projectId });
 }
 
-function tryResolveEffectiveContext(config: N8nConfigurationService) {
+async function tryPrepareEffectiveContext(config: N8nConfigurationService, instanceId?: string) {
   try {
-    return config.resolveEffectiveContext();
+    const runtime = new N8nRuntimeOrchestrator({ configuration: config });
+    const prepared = await runtime.prepareEffectiveContext({
+      instanceId,
+      consumer: 'cli',
+      autoStart: true,
+    });
+    return prepared.runtime.blocked ? undefined : prepared.context;
   } catch {
     return undefined;
   }
@@ -377,6 +515,17 @@ function resolveInstance(
   if (matches.length > 1) throw new Error(`Ambiguous n8n instance name: ${selector}. Use an instance id.`);
   if (options.required) throw new Error(`Unknown n8n instance: ${selector}`);
   return undefined;
+}
+
+function resolveProject(projects: N8nProjectSnapshot[], selector: string): N8nProjectSnapshot | undefined {
+  const normalized = selector.trim().toLowerCase();
+  return projects.find((project) => project.id === selector)
+    ?? projects.find((project) => project.name.toLowerCase() === normalized)
+    ?? projects.find((project) => project.type?.toLowerCase() === normalized);
+}
+
+function displayProjectName(project: N8nProjectSnapshot): string {
+  return project.type === 'personal' ? 'Personal' : project.name;
 }
 
 function toPublicInstance(instance: GlobalN8nInstance): Record<string, unknown> {
@@ -410,17 +559,27 @@ Usage:
   n8n-manager instances add --name NAME --mode existing --url URL --api-key KEY
   n8n-manager instances add --name NAME --mode managed-local-docker [--tunnel] [--no-bootstrap-owner]
   n8n-manager instances select <id-or-name>
+  n8n-manager instances setup <id-or-name> [--tunnel] [--no-bootstrap-owner]
+  n8n-manager instances start <id-or-name>
+  n8n-manager instances stop <id-or-name>
+  n8n-manager instances restart <id-or-name>
+  n8n-manager instances status <id-or-name>
+  n8n-manager instances tunnel start|stop|refresh|status|url <id-or-name>
   n8n-manager instances delete <id-or-name> [--destroy-data --force]
   n8n-manager config get
   n8n-manager config set-sync-folder <path>
+  n8n-manager auth set --url URL (--api-key KEY | --api-key-stdin) [--name NAME] [--id ID] [--no-select]
+  n8n-manager auth test [--instance <id-or-name>]
+  n8n-manager projects list [--instance <id-or-name>]
+  n8n-manager projects select <project-id-or-name> [--instance <id-or-name>]
   n8n-manager agent instructions [--write PATH]
   n8n-manager presentWorkflowResult --workflow-id <id> [--instance <id-or-name>]
   n8n-manager auth-bridge status
   n8n-manager auth-bridge start
-  n8n-manager status
-  n8n-manager start
-  n8n-manager stop
-  n8n-manager restart
+  n8n-manager status [--instance <id-or-name>]
+  n8n-manager start [--instance <id-or-name>]
+  n8n-manager stop [--instance <id-or-name>]
+  n8n-manager restart [--instance <id-or-name>]
   n8n-manager delete [--destroy-data --force]
   n8n-manager credentials list
   n8n-manager credentials catalog

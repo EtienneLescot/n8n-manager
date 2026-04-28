@@ -59,6 +59,63 @@ test('CLI manages global instances and sync folder', async () => {
     const config = JSON.parse(listed.stdout);
     assert.equal(config.activeInstanceId, 'prod');
     assert.equal(config.instances[0].name, 'Production');
+
+    const status = await captureStdout(() => runCli(['instances', 'status', 'Production']));
+    assert.equal(status.code, 0);
+    const runtime = JSON.parse(status.stdout);
+    assert.equal(runtime.instanceId, 'prod');
+    assert.equal(runtime.ready, true);
+
+    const topLevelStatus = await captureStdout(() => runCli(['status', '--instance', 'prod']));
+    assert.equal(topLevelStatus.code, 0);
+    assert.equal(JSON.parse(topLevelStatus.stdout).instanceId, 'prod');
+  });
+});
+
+test('CLI manages auth and default projects through n8n-manager', async () => {
+  await withManagerHome(async () => {
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = (async (input) => {
+      const url = input.toString();
+      if (url.endsWith('/api/v1/workflows')) {
+        return Response.json({ data: [] });
+      }
+      if (url.endsWith('/api/v1/projects')) {
+        return Response.json({
+          data: [
+            { id: 'personal', name: 'Personal', type: 'personal' },
+            { id: 'project-main', name: 'Main', type: 'team' },
+          ],
+        });
+      }
+      return new Response('{}', { status: 404, statusText: 'Not Found' });
+    }) as typeof fetch;
+    try {
+      const saved = await captureStdout(() => runCli([
+        'auth',
+        'set',
+        '--id',
+        'local',
+        '--name',
+        'Local',
+        '--url',
+        'http://127.0.0.1:5678',
+        '--api-key',
+        'local-key',
+      ]));
+      assert.equal(saved.code, 0);
+      assert.equal(JSON.parse(saved.stdout).instance.id, 'local');
+
+      const listed = await captureStdout(() => runCli(['projects', 'list', '--instance', 'local']));
+      assert.equal(listed.code, 0);
+      assert.equal(JSON.parse(listed.stdout).projects[1].id, 'project-main');
+
+      const selected = await captureStdout(() => runCli(['projects', 'select', 'Main', '--instance', 'local']));
+      assert.equal(selected.code, 0);
+      assert.equal(JSON.parse(selected.stdout).project.id, 'project-main');
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
   });
 });
 

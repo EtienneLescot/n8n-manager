@@ -20,6 +20,7 @@ export interface N8nConfigurationLifecycleInstanceRef {
   databaseType?: 'sqlite';
   databasePath?: string;
   tunnelPublicUrl?: string;
+  tunnelTargetUrl?: string;
   tunnelPid?: number;
 }
 
@@ -55,6 +56,7 @@ export interface GlobalN8nInstance {
   apiKeyRef?: string;
   apiKeyAvailable?: boolean;
   tunnelPublicUrl?: string;
+  tunnelTargetUrl?: string;
   tunnelPid?: number;
   createdAt?: string;
   updatedAt?: string;
@@ -121,6 +123,7 @@ export interface UpsertGlobalN8nInstanceInput {
   runtimeStatePath?: string;
   apiKeyRef?: string;
   tunnelPublicUrl?: string;
+  tunnelTargetUrl?: string;
   tunnelPid?: number;
   metadata?: Record<string, unknown>;
 }
@@ -209,6 +212,7 @@ export class N8nConfigurationService {
       apiKeyRef: input.apiKey || existing?.apiKeyAvailable ? `n8n-manager:instance:${id}` : existing?.apiKeyRef,
       apiKeyAvailable: Boolean(input.apiKey) || Boolean(existing?.apiKeyAvailable),
       tunnelPublicUrl: cleanString(input.tunnelPublicUrl ?? existing?.tunnelPublicUrl),
+      tunnelTargetUrl: cleanString(input.tunnelTargetUrl ?? existing?.tunnelTargetUrl),
       tunnelPid: typeof input.tunnelPid === 'number' ? input.tunnelPid : existing?.tunnelPid,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
@@ -245,6 +249,7 @@ export class N8nConfigurationService {
       apiKey: options.apiKey ?? instance.apiKey,
       apiKeyRef: instance.apiKeyRef,
       tunnelPublicUrl: instance.tunnelPublicUrl,
+      tunnelTargetUrl: instance.tunnelTargetUrl,
       tunnelPid: instance.tunnelPid,
       metadata: stripUndefined({
         containerName: instance.containerName,
@@ -297,6 +302,25 @@ export class N8nConfigurationService {
       throw new Error(`Unknown n8n instance: ${instanceId}`);
     }
     return this.upsertInstance({ ...instance, defaultProject: project }, { setActive: false });
+  }
+
+  clearInstanceTunnel(instanceId: string): GlobalN8nInstance {
+    const config = this.readGlobalConfig();
+    const instance = config.instances.find((candidate) => candidate.id === instanceId);
+    if (!instance) {
+      throw new Error(`Unknown n8n instance: ${instanceId}`);
+    }
+
+    const nextInstance = stripUndefined({
+      ...instance,
+      tunnelPublicUrl: undefined,
+      tunnelTargetUrl: undefined,
+      tunnelPid: undefined,
+      updatedAt: new Date().toISOString(),
+    });
+    const instances = config.instances.map((candidate) => candidate.id === instanceId ? nextInstance : candidate);
+    this.writeGlobalConfig({ ...config, instances });
+    return nextInstance;
   }
 
   readWorkspaceOverrides(workspaceRoot: string): N8nWorkspaceOverrides {
@@ -501,6 +525,7 @@ function sanitizeInstance(source: GlobalN8nInstance): GlobalN8nInstance {
     apiKeyRef: cleanString(source.apiKeyRef),
     apiKeyAvailable: Boolean(source.apiKeyAvailable),
     tunnelPublicUrl: cleanString(source.tunnelPublicUrl ?? readMetadataString(source.metadata, 'tunnelPublicUrl')),
+    tunnelTargetUrl: cleanString(source.tunnelTargetUrl ?? readMetadataString(source.metadata, 'tunnelTargetUrl')),
     tunnelPid: typeof source.tunnelPid === 'number'
       ? source.tunnelPid
       : readMetadataNumber(source.metadata, 'tunnelPid'),

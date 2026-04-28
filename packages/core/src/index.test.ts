@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   FileBackedN8nLifecycleManager,
   N8nConfigurationService,
+  N8nRuntimeOrchestrator,
   createManagedLocalLifecycleManager,
   readFileBackedN8nInstance,
   type FileBackedN8nLifecycleManagerOptions,
@@ -168,6 +169,145 @@ test('managed-local lifecycle resolution creates isolated runtime names and port
   assert.match(second.containerName, /^n8n-manager-second-/);
   assert.notEqual(second.statePath, first.statePath);
   assert.notEqual(second.port, 5678);
+});
+
+test('runtime orchestrator recreates a missing managed container with the stable volume', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-runtime-'));
+  const service = new N8nConfigurationService({ baseDir: dir });
+  const statePath = service.getRuntimeStatePath('managed-one');
+  const dockerState: DockerState = { exists: false, running: false, commands: [] };
+  service.upsertInstance({
+    id: 'managed-one',
+    name: 'Managed One',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5690',
+    runtimeStatePath: statePath,
+    apiKey: 'n8n_api_managed',
+    metadata: {
+      containerName: 'managed-one',
+      volumeName: 'managed-one-data',
+      databaseType: 'sqlite',
+      databasePath: '/home/node/.n8n/database.sqlite',
+    },
+  });
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify({
+    id: 'managed-one',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5690',
+    provider: 'docker',
+    runtimeStatePath: statePath,
+    containerName: 'managed-one',
+    volumeName: 'managed-one-data',
+    databaseType: 'sqlite',
+    databasePath: '/home/node/.n8n/database.sqlite',
+    apiKey: 'n8n_api_managed',
+    apiKeyScopes: DEFAULT_TEST_API_KEY_SCOPES,
+  }, null, 2));
+
+  const runtime = new N8nRuntimeOrchestrator({
+    configuration: service,
+    runner: createDockerRunner(dockerState),
+    waitForReady: false,
+  });
+
+  const status = await runtime.startInstance('managed-one');
+
+  assert.equal(status.ready, true);
+  assert.ok(dockerState.commands.includes('docker volume create managed-one-data'));
+  assert.ok(dockerState.commands.some((command) => command.startsWith('docker run -d --name managed-one')));
+  assert.ok(dockerState.commands.some((command) => command.includes('managed-one-data:/home/node/.n8n')));
+});
+
+test('runtime orchestrator reports Docker unavailable without retry loops', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-runtime-'));
+  const service = new N8nConfigurationService({ baseDir: dir });
+  const statePath = service.getRuntimeStatePath('docker-down');
+  service.upsertInstance({
+    id: 'docker-down',
+    name: 'Docker Down',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5691',
+    runtimeStatePath: statePath,
+    apiKey: 'n8n_api_managed',
+    metadata: {
+      containerName: 'docker-down',
+      volumeName: 'docker-down-data',
+    },
+  });
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify({
+    id: 'docker-down',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5691',
+    provider: 'docker',
+    runtimeStatePath: statePath,
+    containerName: 'docker-down',
+    volumeName: 'docker-down-data',
+    apiKey: 'n8n_api_managed',
+  }, null, 2));
+
+  const runtime = new N8nRuntimeOrchestrator({
+    configuration: service,
+    runner: async () => {
+      throw new Error('Cannot connect to the Docker daemon');
+    },
+    waitForReady: false,
+  });
+
+  const status = await runtime.getRuntimeStatus('docker-down');
+
+  assert.equal(status.ready, false);
+  assert.equal(status.blocked?.code, 'docker-unavailable');
+  assert.match(status.blocked?.message ?? '', /Docker daemon/i);
+});
+
+test('runtime orchestrator reuses a live tunnel process for the same target', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-runtime-'));
+  const service = new N8nConfigurationService({ baseDir: dir });
+  const statePath = service.getRuntimeStatePath('tunnel-managed');
+  const dockerState: DockerState = { exists: true, running: true, commands: [] };
+  service.upsertInstance({
+    id: 'tunnel-managed',
+    name: 'Tunnel Managed',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5692',
+    runtimeStatePath: statePath,
+    apiKey: 'n8n_api_managed',
+    tunnelPublicUrl: 'https://stable.trycloudflare.com',
+    tunnelTargetUrl: 'http://127.0.0.1:5692',
+    tunnelPid: process.pid,
+    metadata: {
+      containerName: 'tunnel-managed',
+      volumeName: 'tunnel-managed-data',
+    },
+  });
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify({
+    id: 'tunnel-managed',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5692',
+    provider: 'docker',
+    runtimeStatePath: statePath,
+    containerName: 'tunnel-managed',
+    volumeName: 'tunnel-managed-data',
+    apiKey: 'n8n_api_managed',
+    tunnelPublicUrl: 'https://stable.trycloudflare.com',
+    tunnelTargetUrl: 'http://127.0.0.1:5692',
+    tunnelPid: process.pid,
+  }, null, 2));
+
+  const runtime = new N8nRuntimeOrchestrator({
+    configuration: service,
+    runner: createDockerRunner(dockerState),
+    waitForReady: false,
+  });
+
+  const status = await runtime.ensureTunnel('tunnel-managed', { action: 'ensure' });
+
+  assert.equal(status.tunnel?.running, true);
+  assert.equal(status.tunnel?.publicUrl, 'https://stable.trycloudflare.com');
+  assert.ok(!dockerState.commands.some((command) => command.startsWith('docker rm -f tunnel-managed')));
 });
 
 test('managed-local-docker delete removes the container and can destroy the volume with force', async () => {
