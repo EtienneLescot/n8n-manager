@@ -3,7 +3,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { FileBackedN8nLifecycleManager, readFileBackedN8nInstance, type FileBackedN8nLifecycleManagerOptions } from './index.js';
+import {
+  FileBackedN8nLifecycleManager,
+  N8nConfigurationService,
+  createManagedLocalLifecycleManager,
+  readFileBackedN8nInstance,
+  type FileBackedN8nLifecycleManagerOptions,
+} from './index.js';
 
 type DockerState = {
   exists?: boolean;
@@ -111,6 +117,7 @@ test('managed-local-docker setup creates and reports a real docker container', a
   const dockerState: DockerState = { commands: [] };
   const manager = new FileBackedN8nLifecycleManager(statePath, {
     runner: createDockerRunner(dockerState),
+    instanceId: 'test-managed-instance',
     containerName: 'test-n8n',
     volumeName: 'test-n8n-data',
     port: 5688,
@@ -120,15 +127,47 @@ test('managed-local-docker setup creates and reports a real docker container', a
 
   const instance = await manager.setup({ mode: 'managed-local-docker' });
 
+  assert.equal(instance.id, 'test-managed-instance');
   assert.equal(instance.provider, 'docker');
   assert.equal(instance.containerName, 'test-n8n');
   assert.equal(instance.volumeName, 'test-n8n-data');
   assert.equal(instance.baseUrl, 'http://127.0.0.1:5688');
+  assert.equal(instance.databaseType, 'sqlite');
+  assert.equal(instance.databasePath, '/home/node/.n8n/database.sqlite');
   assert.ok(dockerState.commands.some((command) => command.startsWith('docker run -d --name test-n8n')));
+  assert.ok(dockerState.commands.some((command) => command.includes('DB_TYPE=sqlite')));
+  assert.ok(dockerState.commands.some((command) => command.includes('test-n8n-data:/home/node/.n8n')));
 
   const status = await manager.status();
   assert.equal(status.status, 'ready');
   assert.equal(status.checks[0].status, 'pass');
+});
+
+test('managed-local lifecycle resolution creates isolated runtime names and ports', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-lifecycle-'));
+  const service = new N8nConfigurationService({ baseDir: dir });
+  service.upsertInstance({
+    id: 'n8n-manager-first',
+    name: 'First',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5678',
+    runtimeStatePath: path.join(dir, 'runtime', 'n8n-manager-first.json'),
+    metadata: {
+      containerName: 'n8n-manager-first',
+      volumeName: 'n8n-manager-first-data',
+    },
+  });
+
+  const first = await createManagedLocalLifecycleManager(service, { instanceId: 'n8n-manager-first' });
+  const second = await createManagedLocalLifecycleManager(service, { name: 'Second' });
+
+  assert.equal(first.instanceId, 'n8n-manager-first');
+  assert.equal(first.containerName, 'n8n-manager-first');
+  assert.equal(first.port, 5678);
+  assert.notEqual(second.instanceId, first.instanceId);
+  assert.match(second.containerName, /^n8n-manager-second-/);
+  assert.notEqual(second.statePath, first.statePath);
+  assert.notEqual(second.port, 5678);
 });
 
 test('managed-local-docker delete removes the container and can destroy the volume with force', async () => {

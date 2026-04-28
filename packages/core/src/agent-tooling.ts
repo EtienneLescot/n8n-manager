@@ -1,0 +1,796 @@
+import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  N8nConfigurationService,
+  resolveN8nManagerHome,
+  type GlobalN8nInstance,
+} from './configuration-service.js';
+
+const LOCAL_BRIDGE_HOST = '127.0.0.1';
+const DEFAULT_LOCAL_BRIDGE_PORT = 3791;
+const LOCAL_BRIDGE_START_TIMEOUT_MS = 8_000;
+const WORKFLOW_EMBED_TYPE = 'workflow-embed';
+
+let serverPromise: Promise<void> | undefined;
+let server: Server | undefined;
+let activePort = DEFAULT_LOCAL_BRIDGE_PORT;
+
+export interface N8nManagerAgentInstructionsOptions {
+  command?: string;
+}
+
+export interface PresentWorkflowExecutionResult {
+  status: 'success' | 'error' | 'waiting';
+  executionId?: string;
+  summary?: string;
+  data?: string;
+}
+
+export interface PresentWorkflowResultInput {
+  workflowId: string;
+  workflowUrl?: string;
+  title?: string;
+  diagram?: string;
+  executionResult?: PresentWorkflowExecutionResult;
+  instanceId?: string;
+}
+
+export interface WorkflowEmbedPayload {
+  __type: typeof WORKFLOW_EMBED_TYPE;
+  kind: 'workflow';
+  workflowId: string;
+  url: string;
+  targetUrl: string;
+  via: 'direct' | 'self-contained-auth';
+  title?: string;
+  diagram?: string;
+  executionResult?: PresentWorkflowExecutionResult;
+  presented: true;
+  workflowUrl: string;
+}
+
+export interface LocalOpenBridgeState {
+  port: number;
+  pid: number;
+  startedAt: string;
+}
+
+export interface LocalOpenBridgeStatus {
+  running: boolean;
+  port?: number;
+  pid?: number;
+  url?: string;
+  startedAt?: string;
+  statePath: string;
+}
+
+export interface OwnerCredentials {
+  email: string;
+  password: string;
+  firstName?: string;
+  lastName?: string;
+}
+
+export interface WorkflowWebviewOpenInput {
+  workflowId: string;
+  proxyBaseUrl: string;
+  workflowUrl?: string;
+  workspaceRoot?: string;
+  instanceId?: string;
+  routePath?: string;
+}
+
+export interface WorkflowWebviewOpenPayload {
+  workflowId: string;
+  url: string;
+  targetUrl: string;
+  via: 'direct' | 'self-contained-auth';
+  routePath?: string;
+  autoLoginPageHtml?: string;
+}
+
+export function getN8nManagerAgentInstructions(options: N8nManagerAgentInstructionsOptions = {}): string {
+  const command = options.command?.trim() || 'n8n-manager';
+  return [
+    '# n8n-manager Agent Tools',
+    '',
+    'The following `n8n-manager` commands are available in your shell and should be run with the shell tool when needed:',
+    '',
+    `- use \`${command} presentWorkflowResult --workflow-id <workflowId>\` — present or reference a specific n8n workflow by its ID. Run this whenever you are presenting a workflow or the user requests the workflow URL. This allows compatible surfaces to render the workflow link and graph correctly.`,
+    '  - After running a workflow via `n8nac` or similar, you MUST call this command to present the result.',
+    '  - After running it, do not restate the raw JSON payload.',
+    '  - If the user only asked to present or open the workflow, keep the follow-up text minimal. Do not paraphrase the full workflow structure unless the user explicitly asked for an explanation.',
+    `- \`${command} llm-proxy status\` — inspect the current n8n-manager LLM proxy credential state for n8n chat model nodes. Run this to check whether the proxy credential is active.`,
+    `  - If the credential is missing or stale, do NOT try to provision it blindly. Ask the user whether they want to run \`${command} credentials setup llm-proxy ...\` or switch to a native n8n provider node instead.`,
+    '',
+    '## Workflow Creation/Modification/Execution Guidelines',
+    '',
+    `- After creation/modification/execution of a workflow via \`n8nac\`, you MUST call \`${command} presentWorkflowResult --workflow-id <id>\` to present the result to the user.`,
+    '- If workflow activation fails repeatedly, you MUST stop retrying. Do not continue attempting the same failed activation.',
+    '  - Summarize the failure to the user.',
+    '  - Explain what went wrong.',
+    '  - Suggest alternatives or next steps.',
+    '- Only retry if new information changes the situation.',
+    '- Do not loop. If you have already tried 2-3 times and it keeps failing, stop and explain the situation.',
+  ].join('\n');
+}
+
+export async function presentWorkflowResult(
+  input: PresentWorkflowResultInput,
+  configuration = new N8nConfigurationService(),
+): Promise<WorkflowEmbedPayload> {
+  const workflowId = input.workflowId.trim();
+  if (!workflowId) {
+    throw new Error('workflowId is required.');
+  }
+
+  const context = configuration.resolveEffectiveContext({
+    instanceId: input.instanceId,
+    syncFolderDefault: 'global',
+  });
+  const workflowUrl = resolveWorkflowUrl(workflowId, context.host, input.workflowUrl);
+  const link = await resolveWorkflowOpenLink(workflowUrl, context.instance);
+
+  return {
+    __type: WORKFLOW_EMBED_TYPE,
+    kind: 'workflow',
+    workflowId,
+    url: link.openUrl,
+    targetUrl: link.targetUrl,
+    via: link.via,
+    title: cleanString(input.title),
+    diagram: cleanString(input.diagram),
+    executionResult: input.executionResult,
+    presented: true,
+    workflowUrl,
+  };
+}
+
+export async function resolveWorkflowWebviewOpen(
+  input: WorkflowWebviewOpenInput,
+  configuration = new N8nConfigurationService(),
+): Promise<WorkflowWebviewOpenPayload> {
+  const workflowId = input.workflowId.trim();
+  if (!workflowId) {
+    throw new Error('workflowId is required.');
+  }
+
+  const context = configuration.resolveEffectiveContext({
+    workspaceRoot: input.workspaceRoot,
+    instanceId: input.instanceId,
+    syncFolderDefault: input.workspaceRoot ? 'workspace' : 'global',
+  });
+  const workflowUrl = resolveWorkflowUrl(workflowId, context.host, input.workflowUrl);
+  const targetUrl = rewriteUrlToBase(workflowUrl, input.proxyBaseUrl);
+  const ownerCredentials = await resolveManagedN8nOwnerCredentialsForInstance(context.instance);
+  if (!ownerCredentials) {
+    return {
+      workflowId,
+      url: targetUrl,
+      targetUrl,
+      via: 'direct',
+    };
+  }
+
+  const routePath = input.routePath ?? `/__n8n-manager/open-workflow/${encodeURIComponent(workflowId)}`;
+  const routeUrl = new URL(routePath, ensureTrailingSlash(input.proxyBaseUrl)).toString();
+  return {
+    workflowId,
+    url: routeUrl,
+    targetUrl,
+    via: 'self-contained-auth',
+    routePath,
+    autoLoginPageHtml: buildManagedN8nSameOriginWorkflowOpenPage({
+      targetUrl,
+      loginUrl: new URL('/rest/login', ensureTrailingSlash(input.proxyBaseUrl)).toString(),
+      credentials: ownerCredentials,
+    }),
+  };
+}
+
+export async function resolveWorkflowOpenLink(
+  workflowUrl: string,
+  instance: GlobalN8nInstance,
+): Promise<{ openUrl: string; targetUrl: string; via: 'direct' | 'self-contained-auth' }> {
+  const target = normalizeUrl(workflowUrl);
+  if (!target) {
+    return { openUrl: workflowUrl, targetUrl: workflowUrl, via: 'direct' };
+  }
+
+  const publicTargetUrl = instance.tunnelPublicUrl
+    ? replaceUrlOrigin(target, instance.tunnelPublicUrl)
+    : target.toString();
+
+  const ownerCredentials = await resolveManagedN8nOwnerCredentialsForInstance(instance);
+  if (!ownerCredentials) {
+    return {
+      openUrl: publicTargetUrl,
+      targetUrl: publicTargetUrl,
+      via: 'direct',
+    };
+  }
+
+  await ensureLocalN8nAuthBridgeRunning();
+  return {
+    openUrl: buildLocalWorkflowOpenBridgeUrl(publicTargetUrl),
+    targetUrl: publicTargetUrl,
+    via: 'self-contained-auth',
+  };
+}
+
+export async function ensureLocalN8nAuthBridgeRunning(): Promise<LocalOpenBridgeState> {
+  const existing = getActiveLocalOpenBridgeState();
+  if (existing) {
+    activePort = existing.port;
+    return existing;
+  }
+
+  spawnLocalOpenBridgeProcess();
+  return waitForLocalOpenBridgeState(LOCAL_BRIDGE_START_TIMEOUT_MS);
+}
+
+export function getLocalN8nAuthBridgeStatus(): LocalOpenBridgeStatus {
+  const state = getActiveLocalOpenBridgeState();
+  return {
+    running: Boolean(state),
+    port: state?.port,
+    pid: state?.pid,
+    url: state ? `http://${LOCAL_BRIDGE_HOST}:${state.port}` : undefined,
+    startedAt: state?.startedAt,
+    statePath: getLocalOpenBridgeStatePath(),
+  };
+}
+
+export async function ensureLocalN8nAuthBridgeRunningInProcess(): Promise<LocalOpenBridgeState> {
+  const existing = getActiveLocalOpenBridgeState();
+  if (existing && existing.pid !== process.pid) {
+    activePort = existing.port;
+    return existing;
+  }
+
+  if (serverPromise) {
+    await serverPromise;
+    return getActiveLocalOpenBridgeState() ?? { port: activePort, pid: process.pid, startedAt: new Date().toISOString() };
+  }
+
+  serverPromise = new Promise<void>((resolve, reject) => {
+    const tryListen = (port: number) => {
+      const nextServer = createServer((request, response) => {
+        void handleBridgeRequest(request, response);
+      });
+
+      nextServer.once('error', (error) => {
+        server = undefined;
+        if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE' && port !== 0) {
+          tryListen(0);
+          return;
+        }
+        serverPromise = undefined;
+        reject(error);
+      });
+
+      nextServer.listen(port, LOCAL_BRIDGE_HOST, () => {
+        const address = nextServer.address();
+        activePort = typeof address === 'object' && address ? address.port : port;
+        server = nextServer;
+        saveLocalOpenBridgeState({
+          port: activePort,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+        });
+        resolve();
+      });
+    };
+
+    tryListen(DEFAULT_LOCAL_BRIDGE_PORT);
+  });
+
+  await serverPromise;
+  return getActiveLocalOpenBridgeState() ?? { port: activePort, pid: process.pid, startedAt: new Date().toISOString() };
+}
+
+export function buildManagedN8nWorkflowOpenPage(input: {
+  targetUrl: string;
+  loginUrl: string;
+  credentials: OwnerCredentials;
+}): string {
+  const pageTitle = escapeHtml(`Open ${input.targetUrl}`);
+  const escapedTargetUrl = escapeHtml(input.targetUrl);
+  const escapedLoginUrl = escapeHtml(input.loginUrl);
+  const escapedEmail = escapeHtml(input.credentials.email);
+  const escapedPassword = escapeHtml(input.credentials.password);
+  const encodedTargetUrl = JSON.stringify(input.targetUrl);
+  const encodedLoginUrl = JSON.stringify(input.loginUrl);
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${pageTitle}</title>
+    <style>
+      :root { color-scheme: dark; --bg: #101418; --panel: #171d23; --text: #eef3f7; --muted: #9aa7b3; --accent: #ff6d5a; --accent-strong: #ff8d6b; --border: rgba(255,255,255,0.08); }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text); font: 16px/1.5 ui-sans-serif, system-ui, sans-serif; }
+      .panel { width: min(680px, calc(100vw - 32px)); background: var(--panel); border: 1px solid var(--border); border-radius: 18px; padding: 28px; box-shadow: 0 20px 60px rgba(0,0,0,0.35); }
+      h1 { margin: 0 0 8px; font-size: 24px; }
+      p { margin: 0 0 14px; color: var(--muted); }
+      .status { margin: 18px 0; padding: 12px 14px; border-radius: 12px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); }
+      .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+      a, button { appearance: none; border: 0; border-radius: 999px; padding: 10px 16px; font: inherit; cursor: pointer; text-decoration: none; }
+      .primary { background: linear-gradient(135deg, var(--accent), var(--accent-strong)); color: #111; font-weight: 700; }
+      .secondary { background: rgba(255,255,255,0.06); color: var(--text); }
+      .secret { margin-top: 16px; padding: 14px; border-radius: 12px; border: 1px solid var(--border); background: rgba(0,0,0,0.18); }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-all; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <main class="panel">
+      <h1>Opening n8n workflow</h1>
+      <p>n8n-manager is signing you into n8n, then opening the workflow.</p>
+      <div class="status" id="status">Signing in...</div>
+      <div class="actions">
+        <button class="primary" type="button" id="continue">Continue</button>
+        <a class="secondary hidden" href="${escapedTargetUrl}" id="open-link">Open workflow directly</a>
+        <button class="secondary" type="button" id="show-creds">Show credentials</button>
+      </div>
+      <section class="secret hidden" id="credentials">
+        <p>Email<br /><code>${escapedEmail}</code></p>
+        <p>Password<br /><code>${escapedPassword}</code></p>
+      </section>
+      <form id="login-form" method="post" action="${escapedLoginUrl}" target="n8n-manager-login-window" style="display:none">
+        <input type="hidden" name="emailOrLdapLoginId" value="${escapedEmail}" />
+        <input type="hidden" name="password" value="${escapedPassword}" />
+      </form>
+    </main>
+    <script>
+      (function() {
+        var form = document.getElementById('login-form');
+        var status = document.getElementById('status');
+        var creds = document.getElementById('credentials');
+        var btn = document.getElementById('show-creds');
+        var continueBtn = document.getElementById('continue');
+        var openLink = document.getElementById('open-link');
+        var targetUrl = ${encodedTargetUrl};
+        var helperWindow = null;
+
+        btn && btn.addEventListener('click', function() { creds && creds.classList.remove('hidden'); });
+
+        function revealFallback(message) {
+          if (status) status.textContent = message;
+          if (creds) creds.classList.remove('hidden');
+          if (openLink) openLink.classList.remove('hidden');
+        }
+
+        function startLogin() {
+          try {
+            helperWindow = window.open('about:blank', 'n8n-manager-login-window', 'popup,width=520,height=640');
+          } catch (e) {
+            helperWindow = null;
+          }
+          if (!helperWindow) {
+            revealFallback('Browser blocked the helper window. Click Continue to allow sign-in, or open the workflow directly and use the credentials below.');
+            return false;
+          }
+          try {
+            helperWindow.document.write('<!doctype html><title>Signing in...</title><body style="font: 16px system-ui; padding: 24px;">Signing you into n8n...</body>');
+            helperWindow.document.close();
+          } catch (e) {}
+          if (status) status.textContent = 'Signing in via the helper window...';
+          try {
+            form.submit();
+          } catch (e) {
+            revealFallback((e && e.message) || 'Sign-in failed.');
+            return false;
+          }
+          window.setTimeout(function() {
+            try { helperWindow.close(); } catch (e) {}
+            window.location.replace(targetUrl);
+          }, 1200);
+          return true;
+        }
+
+        continueBtn && continueBtn.addEventListener('click', function() { startLogin(); });
+        if (!startLogin() && status) status.textContent = 'Automatic sign-in needs a top-level helper window. Click Continue.';
+      })();
+    </script>
+  </body>
+</html>`;
+}
+
+export function buildManagedN8nSameOriginWorkflowOpenPage(input: {
+  targetUrl: string;
+  loginUrl: string;
+  credentials: OwnerCredentials;
+}): string {
+  const pageTitle = escapeHtml(`Open ${input.targetUrl}`);
+  const escapedTargetUrl = escapeHtml(input.targetUrl);
+  const escapedEmail = escapeHtml(input.credentials.email);
+  const escapedPassword = escapeHtml(input.credentials.password);
+  const encodedTargetUrl = JSON.stringify(input.targetUrl);
+  const encodedLoginUrl = JSON.stringify(input.loginUrl);
+  const encodedEmail = JSON.stringify(input.credentials.email);
+  const encodedPassword = JSON.stringify(input.credentials.password);
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${pageTitle}</title>
+    <style>
+      :root { color-scheme: dark; --bg: #101418; --panel: #171d23; --text: #eef3f7; --muted: #9aa7b3; --accent: #ff6d5a; --border: rgba(255,255,255,0.08); }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text); font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
+      .panel { width: min(560px, calc(100vw - 32px)); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 22px; }
+      h1 { margin: 0 0 8px; font-size: 18px; font-weight: 650; }
+      p { margin: 0 0 12px; color: var(--muted); }
+      .status { margin: 16px 0; padding: 10px 12px; border-radius: 6px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); }
+      .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+      a, button { appearance: none; border: 0; border-radius: 4px; padding: 8px 12px; font: inherit; cursor: pointer; text-decoration: none; }
+      .primary { background: var(--accent); color: #111; font-weight: 650; }
+      .secondary { background: rgba(255,255,255,0.06); color: var(--text); }
+      .secret { margin-top: 14px; padding: 12px; border-radius: 6px; border: 1px solid var(--border); background: rgba(0,0,0,0.18); }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <main class="panel">
+      <h1>Opening n8n workflow</h1>
+      <p>n8n-manager is signing this VS Code webview into n8n.</p>
+      <div class="status" id="status">Signing in...</div>
+      <div class="actions">
+        <button class="primary" type="button" id="retry">Retry sign-in</button>
+        <a class="secondary hidden" href="${escapedTargetUrl}" id="open-link">Open workflow</a>
+        <button class="secondary" type="button" id="show-creds">Show credentials</button>
+      </div>
+      <section class="secret hidden" id="credentials">
+        <p>Email<br /><code>${escapedEmail}</code></p>
+        <p>Password<br /><code>${escapedPassword}</code></p>
+      </section>
+    </main>
+    <script>
+      (function() {
+        var status = document.getElementById('status');
+        var retry = document.getElementById('retry');
+        var creds = document.getElementById('credentials');
+        var showCreds = document.getElementById('show-creds');
+        var openLink = document.getElementById('open-link');
+        var targetUrl = ${encodedTargetUrl};
+        var loginUrl = ${encodedLoginUrl};
+        var email = ${encodedEmail};
+        var password = ${encodedPassword};
+
+        showCreds && showCreds.addEventListener('click', function() {
+          creds && creds.classList.remove('hidden');
+        });
+
+        function setStatus(message) {
+          if (status) status.textContent = message;
+        }
+
+        function revealFallback(message) {
+          setStatus(message);
+          if (openLink) openLink.classList.remove('hidden');
+          if (creds) creds.classList.remove('hidden');
+        }
+
+        async function postLogin(headers, body) {
+          return fetch(loginUrl, {
+            method: 'POST',
+            credentials: 'include',
+            headers: headers,
+            body: body
+          });
+        }
+
+        async function login() {
+          setStatus('Signing in...');
+          if (openLink) openLink.classList.add('hidden');
+          try {
+            var form = new URLSearchParams();
+            form.set('emailOrLdapLoginId', email);
+            form.set('password', password);
+            var response = await postLogin({ 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' }, form.toString());
+            if (!response.ok) {
+              response = await postLogin({ 'content-type': 'application/json' }, JSON.stringify({ emailOrLdapLoginId: email, password: password }));
+            }
+            if (!response.ok) {
+              throw new Error('n8n login returned HTTP ' + response.status);
+            }
+            setStatus('Signed in. Opening workflow...');
+            window.location.replace(targetUrl);
+          } catch (error) {
+            revealFallback((error && error.message) || 'Automatic sign-in failed.');
+          }
+        }
+
+        retry && retry.addEventListener('click', function() { login(); });
+        login();
+      })();
+    </script>
+  </body>
+</html>`;
+}
+
+async function handleBridgeRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const method = request.method ?? 'GET';
+  const url = new URL(request.url ?? '/', `http://${LOCAL_BRIDGE_HOST}:${activePort}`);
+
+  if (method === 'GET' && url.pathname === '/health') {
+    response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+    response.end('OK');
+    return;
+  }
+
+  if (method !== 'GET' || !url.pathname.startsWith('/open/n8n-workflow/')) {
+    response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    response.end('Not found');
+    return;
+  }
+
+  const token = decodeURIComponent(url.pathname.slice('/open/n8n-workflow/'.length)).trim();
+  const target = resolveStoredWorkflowOpenTarget(token);
+  const resolution = await resolveManagedWorkflowOpen(target);
+  if (!resolution.ok) {
+    response.writeHead(resolution.statusCode, { 'content-type': 'text/plain; charset=utf-8' });
+    response.end(resolution.error);
+    return;
+  }
+
+  if (resolution.payload.mode === 'direct') {
+    response.writeHead(302, { Location: resolution.payload.targetUrl });
+    response.end();
+    return;
+  }
+
+  response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  response.end(resolution.payload.fallbackPage);
+}
+
+async function resolveManagedWorkflowOpen(target: string): Promise<
+  | { ok: true; payload: { mode: 'direct'; targetUrl: string } }
+  | { ok: true; payload: { mode: 'managed'; targetUrl: string; fallbackPage: string } }
+  | { ok: false; statusCode: number; error: string }
+> {
+  const targetUrl = normalizeUrl(target);
+  if (!targetUrl) {
+    return { ok: false, statusCode: 400, error: 'Workflow target URL is invalid.' };
+  }
+
+  const configuration = new N8nConfigurationService();
+  const instance = findInstanceForTarget(configuration.listInstances(), targetUrl);
+  if (!instance) {
+    return { ok: true, payload: { mode: 'direct', targetUrl: targetUrl.toString() } };
+  }
+
+  const credentials = await resolveManagedN8nOwnerCredentialsForInstance(instance);
+  if (!credentials) {
+    return { ok: true, payload: { mode: 'direct', targetUrl: targetUrl.toString() } };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      mode: 'managed',
+      targetUrl: targetUrl.toString(),
+      fallbackPage: buildManagedN8nWorkflowOpenPage({
+        targetUrl: targetUrl.toString(),
+        loginUrl: new URL('/rest/login', targetUrl.origin).toString(),
+        credentials,
+      }),
+    },
+  };
+}
+
+export async function resolveManagedN8nOwnerCredentialsForInstance(instance: GlobalN8nInstance): Promise<OwnerCredentials | undefined> {
+  if (instance.mode !== 'managed-local-docker' || !instance.runtimeStatePath) {
+    return undefined;
+  }
+  const runtime = await readPrivateRuntimeState(instance.runtimeStatePath);
+  if (!runtime?.ownerEmail || !runtime.ownerPassword) {
+    return undefined;
+  }
+  return {
+    email: runtime.ownerEmail,
+    password: runtime.ownerPassword,
+    firstName: runtime.ownerFirstName,
+    lastName: runtime.ownerLastName,
+  };
+}
+
+async function readPrivateRuntimeState(runtimeStatePath: string): Promise<{
+  ownerEmail?: string;
+  ownerPassword?: string;
+  ownerFirstName?: string;
+  ownerLastName?: string;
+} | undefined> {
+  try {
+    const parsed = JSON.parse(await fs.promises.readFile(runtimeStatePath, 'utf8')) as {
+      ownerEmail?: string;
+      ownerPassword?: string;
+      ownerFirstName?: string;
+      ownerLastName?: string;
+    };
+    return parsed && typeof parsed === 'object' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function findInstanceForTarget(instances: GlobalN8nInstance[], targetUrl: URL): GlobalN8nInstance | undefined {
+  return instances.find((instance) => {
+    const origins = [instance.baseUrl, instance.tunnelPublicUrl]
+      .map((candidate) => normalizeUrl(candidate ?? '')?.origin)
+      .filter((origin): origin is string => Boolean(origin));
+    return origins.includes(targetUrl.origin);
+  });
+}
+
+function resolveWorkflowUrl(workflowId: string, host: string, provided?: string): string {
+  if (/^https?:\/\//.test(workflowId)) {
+    return workflowId.replace(/\/+$/, '');
+  }
+  if (provided) {
+    return provided.replace(/\/+$/, '');
+  }
+  return `${host.replace(/\/+$/, '')}/workflow/${encodeURIComponent(workflowId)}`;
+}
+
+function rewriteUrlToBase(value: string, baseUrl: string): string {
+  const target = normalizeUrl(value);
+  if (!target) return value;
+  const base = normalizeUrl(ensureTrailingSlash(baseUrl));
+  if (!base) return value;
+  return new URL(`${target.pathname}${target.search}${target.hash}`, base).toString();
+}
+
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith('/') ? value : `${value}/`;
+}
+
+function buildLocalWorkflowOpenBridgeUrl(target: string): string {
+  const token = registerWorkflowOpenTarget(target);
+  return `http://${LOCAL_BRIDGE_HOST}:${activePort}/open/n8n-workflow/${token}`;
+}
+
+function registerWorkflowOpenTarget(targetUrl: string): string {
+  const token = createHash('sha256').update(targetUrl).digest('hex').slice(0, 16);
+  const targets = readPersistedTargets();
+  targets[token] = targetUrl;
+  writePersistedTargets(targets);
+  return token;
+}
+
+function resolveStoredWorkflowOpenTarget(token: string): string {
+  return readPersistedTargets()[token] ?? '';
+}
+
+function readPersistedTargets(): Record<string, string> {
+  try {
+    const filePath = getBridgeTargetsPath();
+    if (!fs.existsSync(filePath)) return {};
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePersistedTargets(targets: Record<string, string>): void {
+  fs.mkdirSync(getOpenLinksDir(), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(getBridgeTargetsPath(), JSON.stringify(targets, null, 2), { mode: 0o600 });
+}
+
+function spawnLocalOpenBridgeProcess(): void {
+  const logDir = path.join(resolveN8nManagerHome(), 'logs');
+  fs.mkdirSync(logDir, { recursive: true });
+  const logFd = fs.openSync(path.join(logDir, 'local-open-bridge.log'), 'a');
+  const entrypoint = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'local-open-bridge-entrypoint.js');
+  const child = spawn(process.execPath, [entrypoint], {
+    detached: true,
+    stdio: ['ignore', logFd, logFd],
+    env: process.env,
+  });
+  child.unref();
+  fs.closeSync(logFd);
+}
+
+async function waitForLocalOpenBridgeState(timeoutMs: number): Promise<LocalOpenBridgeState> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = getActiveLocalOpenBridgeState();
+    if (state) {
+      return state;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`Local n8n auth bridge did not start within ${timeoutMs}ms. Check ${path.join(resolveN8nManagerHome(), 'logs', 'local-open-bridge.log')}`);
+}
+
+function getActiveLocalOpenBridgeState(): LocalOpenBridgeState | undefined {
+  const state = readLocalOpenBridgeState();
+  if (!state) return undefined;
+  if (!isPidAlive(state.pid)) {
+    clearLocalOpenBridgeState();
+    return undefined;
+  }
+  activePort = state.port;
+  return state;
+}
+
+function readLocalOpenBridgeState(): LocalOpenBridgeState | undefined {
+  try {
+    const statePath = getLocalOpenBridgeStatePath();
+    if (!fs.existsSync(statePath)) return undefined;
+    const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Partial<LocalOpenBridgeState>;
+    return typeof parsed.port === 'number' && typeof parsed.pid === 'number' && typeof parsed.startedAt === 'string'
+      ? { port: parsed.port, pid: parsed.pid, startedAt: parsed.startedAt }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveLocalOpenBridgeState(state: LocalOpenBridgeState): void {
+  fs.mkdirSync(resolveN8nManagerHome(), { recursive: true });
+  fs.writeFileSync(getLocalOpenBridgeStatePath(), JSON.stringify(state, null, 2));
+}
+
+function clearLocalOpenBridgeState(): void {
+  fs.rmSync(getLocalOpenBridgeStatePath(), { force: true });
+}
+
+function getLocalOpenBridgeStatePath(): string {
+  return path.join(resolveN8nManagerHome(), 'local-open-bridge.json');
+}
+
+function getOpenLinksDir(): string {
+  return path.join(resolveN8nManagerHome(), 'open-links');
+}
+
+function getBridgeTargetsPath(): string {
+  return path.join(getOpenLinksDir(), 'bridge-targets.json');
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function replaceUrlOrigin(target: URL, replacementOrigin: string): string {
+  const replacement = normalizeUrl(replacementOrigin);
+  return replacement ? target.toString().replace(target.origin, replacement.origin) : target.toString();
+}
+
+function normalizeUrl(value: string): URL | undefined {
+  try {
+    return new URL(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function cleanString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}

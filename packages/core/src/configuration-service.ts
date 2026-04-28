@@ -17,6 +17,8 @@ export interface N8nConfigurationLifecycleInstanceRef {
   containerName?: string;
   volumeName?: string;
   image?: string;
+  databaseType?: 'sqlite';
+  databasePath?: string;
   tunnelPublicUrl?: string;
   tunnelPid?: number;
 }
@@ -248,6 +250,8 @@ export class N8nConfigurationService {
         containerName: instance.containerName,
         volumeName: instance.volumeName,
         image: instance.image,
+        databaseType: instance.databaseType,
+        databasePath: instance.databasePath,
       }),
     }, { setActive: options.setActive });
   }

@@ -78,6 +78,8 @@ test('managed lifecycle instances preserve private credentials and keep local AP
     runtimeStatePath: '/tmp/managed-local.json',
     provider: 'docker',
     apiKey: 'managed-key',
+    databaseType: 'sqlite',
+    databasePath: '/home/node/.n8n/database.sqlite',
     tunnelPublicUrl: 'https://managed.trycloudflare.com',
     tunnelPid: 1234,
   });
@@ -88,6 +90,8 @@ test('managed lifecycle instances preserve private credentials and keep local AP
   assert.equal(instance?.apiKeyAvailable, true);
   assert.equal(instance?.runtimeStatePath, '/tmp/managed-local.json');
   assert.equal(instance?.tunnelPublicUrl, 'https://managed.trycloudflare.com');
+  assert.equal(instance?.metadata?.databaseType, 'sqlite');
+  assert.equal(instance?.metadata?.databasePath, '/home/node/.n8n/database.sqlite');
   assert.equal(service.getApiKey('managed-local'), 'managed-key');
   assert.equal(context.host, 'http://127.0.0.1:5678');
 });

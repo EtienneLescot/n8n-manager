@@ -4,11 +4,18 @@ import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fssync from 'node:fs';
 import https from 'node:https';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
+import {
+  N8nConfigurationService,
+  type GlobalN8nInstance,
+} from './configuration-service.js';
+
 export * from './configuration-service.js';
+export * from './agent-tooling.js';
 
 export type N8nInstanceMode = 'managed-local-docker' | 'managed-local-direct' | 'existing' | 'generation-only';
 
@@ -25,6 +32,8 @@ export interface N8nInstanceRef {
   containerName?: string;
   volumeName?: string;
   image?: string;
+  databaseType?: 'sqlite';
+  databasePath?: string;
   apiKey?: string;
   apiKeyScopes?: string[];
   apiKeyAvailable?: boolean;
@@ -77,6 +86,7 @@ type CommandRunner = (command: string, args: string[]) => Promise<{ stdout: stri
 export interface FileBackedN8nLifecycleManagerOptions {
   runner?: CommandRunner;
   fetch?: typeof fetch;
+  instanceId?: string;
   dockerImage?: string;
   containerName?: string;
   volumeName?: string;
@@ -93,6 +103,8 @@ const DEFAULT_DOCKER_IMAGE = 'n8nio/n8n:latest';
 const DEFAULT_CONTAINER_NAME = 'n8n-manager-local';
 const DEFAULT_VOLUME_NAME = 'n8n-manager-local-data';
 const DEFAULT_PORT = 5678;
+const N8N_CONTAINER_DATA_DIR = '/home/node/.n8n';
+const N8N_SQLITE_DATABASE_PATH = `${N8N_CONTAINER_DATA_DIR}/database.sqlite`;
 const DEFAULT_HEALTH_TIMEOUT_MS = 300_000;
 const DEFAULT_EDITOR_TIMEOUT_MS = 90_000;
 const DEFAULT_OWNER_BOOTSTRAP_TIMEOUT_MS = 45_000;
@@ -186,6 +198,7 @@ export class NonDestructiveN8nLifecycleManager implements N8nLifecycleManager {
 export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
   private readonly runner: CommandRunner;
   private readonly fetcher: typeof fetch;
+  private readonly instanceId: string;
   private readonly dockerImage: string;
   private readonly containerName: string;
   private readonly volumeName: string;
@@ -203,6 +216,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     this.fetcher = options.fetch ?? fetch;
     this.dockerImage = options.dockerImage ?? process.env.N8N_MANAGER_DOCKER_IMAGE ?? DEFAULT_DOCKER_IMAGE;
     this.containerName = options.containerName ?? process.env.N8N_MANAGER_DOCKER_CONTAINER ?? DEFAULT_CONTAINER_NAME;
+    this.instanceId = options.instanceId ?? this.containerName;
     this.volumeName = options.volumeName ?? process.env.N8N_MANAGER_DOCKER_VOLUME ?? DEFAULT_VOLUME_NAME;
     this.port = Number(options.port ?? process.env.N8N_MANAGER_DOCKER_PORT ?? DEFAULT_PORT);
     this.bootstrapOwnerDefault = options.bootstrapOwner ?? process.env.N8N_MANAGER_BOOTSTRAP_OWNER !== 'false';
@@ -227,14 +241,16 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     const ownerBootstrap = input.mode === 'managed-local-docker' && shouldBootstrapOwner
       ? await this.bootstrapManagedOwner(baseUrl)
       : undefined;
-    const tunnel = input.mode === 'managed-local-docker' && shouldTunnel
-      ? await this.ensureTunnel(baseUrl)
+    const tunnel = input.mode === 'managed-local-docker'
+      ? shouldTunnel
+        ? await this.ensureTunnel(baseUrl)
+        : undefined
       : existingState?.tunnelPublicUrl && existingState.tunnelPid
-        ? { publicUrl: existingState.tunnelPublicUrl, pid: existingState.tunnelPid }
-        : undefined;
+          ? { publicUrl: existingState.tunnelPublicUrl, pid: existingState.tunnelPid }
+          : undefined;
 
     const instance: N8nInstanceRef = {
-      id: input.mode === 'managed-local-docker' ? this.containerName : (input.baseUrl ?? input.mode),
+      id: input.mode === 'managed-local-docker' ? this.instanceId : (input.baseUrl ?? input.mode),
       mode: input.mode,
       baseUrl,
       runtimeStatePath: this.statePath,
@@ -247,6 +263,8 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       containerName: input.mode === 'managed-local-docker' ? this.containerName : undefined,
       volumeName: input.mode === 'managed-local-docker' ? this.volumeName : undefined,
       image: input.mode === 'managed-local-docker' ? this.dockerImage : undefined,
+      databaseType: input.mode === 'managed-local-docker' ? 'sqlite' : undefined,
+      databasePath: input.mode === 'managed-local-docker' ? N8N_SQLITE_DATABASE_PATH : undefined,
       apiKey: ownerBootstrap?.apiKey ?? existingState?.apiKey,
       apiKeyScopes: ownerBootstrap?.apiKeyScopes ?? existingState?.apiKeyScopes,
       ownerEmail: ownerBootstrap?.ownerEmail ?? existingState?.ownerEmail,
@@ -362,11 +380,13 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       '-e',
       'N8N_PROTOCOL=http',
       '-e',
+      'DB_TYPE=sqlite',
+      '-e',
       `N8N_EDITOR_BASE_URL=http://127.0.0.1:${this.port}`,
       '-e',
       'QUEUE_HEALTH_CHECK_ACTIVE=true',
       '-v',
-      `${this.volumeName}:/home/node/.n8n`,
+      `${this.volumeName}:${N8N_CONTAINER_DATA_DIR}`,
       this.dockerImage,
     ]);
   }
@@ -753,7 +773,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     existing?: N8nInstanceRef,
   ): Promise<void> {
     await this.writeInstance({
-      id: existing?.id ?? this.containerName,
+      id: existing?.id ?? this.instanceId,
       mode: existing?.mode ?? 'managed-local-docker',
       baseUrl: existing?.baseUrl ?? baseUrl,
       runtimeStatePath: existing?.runtimeStatePath ?? this.statePath,
@@ -763,6 +783,8 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       containerName: existing?.containerName ?? this.containerName,
       volumeName: existing?.volumeName ?? this.volumeName,
       image: existing?.image ?? this.dockerImage,
+      databaseType: existing?.databaseType ?? 'sqlite',
+      databasePath: existing?.databasePath ?? N8N_SQLITE_DATABASE_PATH,
       apiKey: existing?.apiKey,
       apiKeyScopes: existing?.apiKeyScopes,
       ownerEmail: credentials.email,
@@ -878,6 +900,125 @@ export function resolveFileBackedN8nStatePath(statePath?: string): string {
 
   const explicitHome = process.env.N8N_MANAGER_HOME?.trim();
   return path.join(explicitHome ? path.resolve(explicitHome) : path.join(os.homedir(), '.n8n-manager'), 'instance.json');
+}
+
+export interface ManagedLocalLifecycleResolution {
+  instanceId: string;
+  statePath: string;
+  containerName: string;
+  volumeName: string;
+  port: number;
+  lifecycle: FileBackedN8nLifecycleManager;
+}
+
+export async function createManagedLocalLifecycleManager(
+  configuration: N8nConfigurationService,
+  input: { instanceId?: string; name?: string; port?: number } = {},
+): Promise<ManagedLocalLifecycleResolution> {
+  const instances = configuration.listInstances();
+  const requestedId = cleanIdentifier(input.instanceId);
+  const existing = requestedId ? configuration.getInstance(requestedId) : undefined;
+  const instanceId = requestedId ?? createUniqueManagedLocalInstanceId(input.name, instances);
+  const containerName = readMetadataString(existing?.metadata, 'containerName') ?? instanceId;
+  const volumeName = readMetadataString(existing?.metadata, 'volumeName') ?? `${containerName}-data`;
+  const statePath = existing?.runtimeStatePath ?? configuration.getRuntimeStatePath(instanceId);
+  const port = input.port
+    ?? parseLocalPort(existing?.baseUrl)
+    ?? await findAvailableManagedPort(instances, instanceId);
+
+  return {
+    instanceId,
+    statePath,
+    containerName,
+    volumeName,
+    port,
+    lifecycle: new FileBackedN8nLifecycleManager(statePath, {
+      instanceId,
+      containerName,
+      volumeName,
+      port,
+    }),
+  };
+}
+
+function createUniqueManagedLocalInstanceId(name: string | undefined, instances: GlobalN8nInstance[]): string {
+  const base = safeDockerName(`n8n-manager-${name?.trim() || 'local'}`);
+  const existingIds = new Set(instances.map((instance) => instance.id));
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidate = `${base}-${crypto.randomUUID().slice(0, 8)}`;
+    if (!existingIds.has(candidate)) {
+      return candidate;
+    }
+  }
+  return `${base}-${Date.now().toString(36)}`;
+}
+
+async function findAvailableManagedPort(instances: GlobalN8nInstance[], currentInstanceId: string): Promise<number> {
+  const usedPorts = new Set(
+    instances
+      .filter((instance) => instance.id !== currentInstanceId)
+      .map((instance) => parseLocalPort(instance.baseUrl))
+      .filter((port): port is number => typeof port === 'number'),
+  );
+  const startPort = Number(process.env.N8N_MANAGER_DOCKER_PORT ?? DEFAULT_PORT);
+
+  for (let port = startPort; port < startPort + 200; port += 1) {
+    if (usedPorts.has(port)) {
+      continue;
+    }
+    if (await isTcpPortAvailable(port)) {
+      return port;
+    }
+  }
+
+  throw new Error(`No available local port found for managed n8n between ${startPort} and ${startPort + 199}.`);
+}
+
+function isTcpPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+function parseLocalPort(baseUrl: string | undefined): number | undefined {
+  if (!baseUrl) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
+      return undefined;
+    }
+    const port = Number(parsed.port);
+    return Number.isInteger(port) && port > 0 ? port : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readMetadataString(metadata: unknown, key: string): string | undefined {
+  if (!metadata || typeof metadata !== 'object') {
+    return undefined;
+  }
+  return cleanIdentifier((metadata as Record<string, unknown>)[key]);
+}
+
+function cleanIdentifier(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function safeDockerName(value: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '-')
+    .replace(/^[^a-z0-9]+/, '')
+    .replace(/[^a-z0-9]+$/, '');
+  return normalized || 'n8n-manager-local';
 }
 
 function formatCommandError(error: unknown): string {

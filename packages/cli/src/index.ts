@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import path from 'node:path';
 import {
   FileBackedN8nLifecycleManager,
   N8nConfigurationService,
+  createManagedLocalLifecycleManager,
+  ensureLocalN8nAuthBridgeRunning,
+  getN8nManagerAgentInstructions,
+  getLocalN8nAuthBridgeStatus,
+  presentWorkflowResult,
   readFileBackedN8nInstance,
   type GlobalN8nInstance,
   type N8nInstanceMode,
@@ -28,13 +34,21 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     if (command === 'setup') {
       const mode = parseMode(readFlag(argv, '--mode') ?? 'generation-only');
       const baseUrl = readFlag(argv, '--url');
-      const snapshot = await lifecycle.setup({
+      const runtime = mode === 'managed-local-docker'
+        ? await createManagedLocalLifecycleManager(config, {
+          instanceId: readFlag(argv, '--id'),
+          name: readFlag(argv, '--name'),
+        })
+        : undefined;
+      const selectedLifecycle = runtime?.lifecycle ?? lifecycle;
+      const selectedStatePath = runtime?.statePath ?? process.env.N8N_MANAGER_STATE_PATH;
+      const snapshot = await selectedLifecycle.setup({
         mode,
         baseUrl,
         tunnel: argv.includes('--tunnel'),
         bootstrapOwner: !argv.includes('--no-bootstrap-owner'),
       });
-      const privateSnapshot = await readFileBackedN8nInstance(process.env.N8N_MANAGER_STATE_PATH);
+      const privateSnapshot = await readFileBackedN8nInstance(selectedStatePath);
       const stored = config.upsertInstanceFromLifecycle(snapshot, {
         name: readFlag(argv, '--name'),
         apiKey: readFlag(argv, '--api-key') ?? privateSnapshot?.apiKey,
@@ -109,6 +123,25 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
         const baseUrl = readFlag(argv, '--url');
         const apiKey = readFlag(argv, '--api-key');
         const mode = parseMode(readFlag(argv, '--mode') ?? 'existing');
+        if (mode === 'managed-local-docker') {
+          const runtime = await createManagedLocalLifecycleManager(config, {
+            instanceId: readFlag(argv, '--id'),
+            name: readFlag(argv, '--name'),
+          });
+          const snapshot = await runtime.lifecycle.setup({
+            mode,
+            tunnel: argv.includes('--tunnel'),
+            bootstrapOwner: !argv.includes('--no-bootstrap-owner'),
+          });
+          const privateSnapshot = await readFileBackedN8nInstance(runtime.statePath);
+          const instance = config.upsertInstanceFromLifecycle(snapshot, {
+            name: readFlag(argv, '--name'),
+            apiKey: privateSnapshot?.apiKey,
+            setActive: !argv.includes('--no-select'),
+          });
+          printJson({ operation: 'instances.add', instance });
+          return 0;
+        }
         const instance = config.upsertInstance({
           id: readFlag(argv, '--id'),
           name: readFlag(argv, '--name'),
@@ -154,6 +187,48 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       if (subcommand === 'set-sync-folder') {
         if (!value) throw new Error('Missing sync folder. Example: n8n-manager config set-sync-folder ~/.n8n-manager/workflows');
         printJson(config.setDefaultSyncFolder(value));
+        return 0;
+      }
+    }
+
+    if (command === 'agent') {
+      if (subcommand === 'instructions' || subcommand === 'context' || !subcommand) {
+        const content = getN8nManagerAgentInstructions({ command: readFlag(argv, '--command') ?? 'n8n-manager' });
+        const outputPath = readFlag(argv, '--write');
+        if (outputPath) {
+          fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+          fs.writeFileSync(outputPath, `${content}\n`);
+        } else {
+          process.stdout.write(`${content}\n`);
+        }
+        return 0;
+      }
+    }
+
+    if (command === 'presentWorkflowResult' || command === 'present-workflow-result') {
+      const workflowId = readFlag(argv, '--workflow-id') ?? value;
+      if (!workflowId) throw new Error('Missing workflow id. Example: n8n-manager presentWorkflowResult --workflow-id abc123');
+      const selected = readFlag(argv, '--instance')
+        ? resolveInstance(config, readFlag(argv, '--instance'), { required: true })
+        : undefined;
+      printJson(await presentWorkflowResult({
+        workflowId,
+        workflowUrl: readFlag(argv, '--workflow-url'),
+        title: readFlag(argv, '--title'),
+        diagram: readFlag(argv, '--diagram'),
+        instanceId: selected?.id,
+      }, config));
+      return 0;
+    }
+
+    if (command === 'auth-bridge') {
+      if (subcommand === 'start') {
+        await ensureLocalN8nAuthBridgeRunning();
+        printJson({ operation: 'auth-bridge.start', ...getLocalN8nAuthBridgeStatus() });
+        return 0;
+      }
+      if (subcommand === 'status' || !subcommand) {
+        printJson({ operation: 'auth-bridge.status', ...getLocalN8nAuthBridgeStatus() });
         return 0;
       }
     }
@@ -214,7 +289,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       }
     }
 
-    if (command === 'llm-proxy' && subcommand === 'status') {
+    if ((command === 'llm-proxy' && subcommand === 'status') || command === 'yagrProxy') {
       const credentials = createCredentialsManager(argv, config);
       const inventory = await credentials.getCredentialInventory();
       const item = inventory.availableCredentials.find((candidate: CredentialInventoryItem) => candidate.recipeId === 'llm-proxy');
@@ -330,13 +405,18 @@ function printHelp(): void {
   console.log(`n8n-manager
 
 Usage:
-  n8n-manager setup --mode generation-only|managed-local-docker|managed-local-direct|existing [--url URL] [--tunnel] [--no-bootstrap-owner]
+  n8n-manager setup --mode generation-only|managed-local-docker|managed-local-direct|existing [--id ID] [--name NAME] [--url URL] [--tunnel] [--no-bootstrap-owner]
   n8n-manager instances list
   n8n-manager instances add --name NAME --mode existing --url URL --api-key KEY
+  n8n-manager instances add --name NAME --mode managed-local-docker [--tunnel] [--no-bootstrap-owner]
   n8n-manager instances select <id-or-name>
   n8n-manager instances delete <id-or-name> [--destroy-data --force]
   n8n-manager config get
   n8n-manager config set-sync-folder <path>
+  n8n-manager agent instructions [--write PATH]
+  n8n-manager presentWorkflowResult --workflow-id <id> [--instance <id-or-name>]
+  n8n-manager auth-bridge status
+  n8n-manager auth-bridge start
   n8n-manager status
   n8n-manager start
   n8n-manager stop
@@ -352,6 +432,7 @@ Usage:
   n8n-manager credentials test <credential-id-or-recipe-id>
   n8n-manager credentials delete <credential-id-or-recipe-id>
   n8n-manager llm-proxy status
+  n8n-manager yagrProxy
 `);
 }
 
