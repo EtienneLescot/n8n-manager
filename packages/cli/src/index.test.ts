@@ -34,6 +34,11 @@ function withManagerHome<T>(callback: () => Promise<T>): Promise<T> {
 
 test('CLI manages global instances and sync folder', async () => {
   await withManagerHome(async () => {
+    const help = await captureStdout(() => runCli(['instances', '--help']));
+    assert.equal(help.code, 0);
+    assert.match(help.stdout, /instances add --name NAME --mode managed-local-docker/);
+    assert.match(help.stdout, /There is no "instances create" command/);
+
     const added = await captureStdout(() => runCli([
       'instances',
       'add',

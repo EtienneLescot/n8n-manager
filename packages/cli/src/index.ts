@@ -122,6 +122,11 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
     }
 
     if (command === 'instances') {
+      if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
+        printInstancesHelp();
+        return 0;
+      }
+
       if (subcommand === 'list' || !subcommand) {
         printJson(config.getGlobalConfig());
         return 0;
@@ -129,7 +134,9 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
 
       if (subcommand === 'add') {
         const baseUrl = readFlag(argv, '--url');
-        const apiKey = readFlag(argv, '--api-key');
+        const apiKey = argv.includes('--api-key-stdin')
+          ? await readSecretFromStdin()
+          : readFlag(argv, '--api-key');
         const mode = parseMode(readFlag(argv, '--mode') ?? 'existing');
         if (mode === 'managed-local-docker') {
           const runtime = await createManagedLocalLifecycleManager(config, {
@@ -611,6 +618,30 @@ Usage:
   n8n-manager credentials delete <credential-id-or-recipe-id>
   n8n-manager llm-proxy status
   n8n-manager yagrProxy
+`);
+}
+
+function printInstancesHelp(): void {
+  console.log(`n8n-manager instances
+
+Usage:
+  n8n-manager instances list
+  n8n-manager instances add --name NAME --mode existing --url URL --api-key KEY
+  n8n-manager instances add --name NAME --mode existing --url URL --api-key-stdin
+  n8n-manager instances add --name NAME --mode managed-local-docker [--tunnel] [--no-bootstrap-owner]
+  n8n-manager instances select <id-or-name>
+  n8n-manager instances setup <id-or-name> [--tunnel] [--no-bootstrap-owner]
+  n8n-manager instances start <id-or-name>
+  n8n-manager instances stop <id-or-name>
+  n8n-manager instances restart <id-or-name>
+  n8n-manager instances status <id-or-name>
+  n8n-manager instances tunnel start|stop|refresh|status|url <id-or-name>
+  n8n-manager instances delete <id-or-name> [--destroy-data --force]
+
+Notes:
+  There is no "instances create" command.
+  Use "instances add --mode managed-local-docker" for a managed local Docker instance.
+  Use "instances add --mode existing --url URL --api-key-stdin" for an existing or remote instance.
 `);
 }
 
