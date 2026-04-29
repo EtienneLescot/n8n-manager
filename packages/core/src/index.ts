@@ -14,6 +14,11 @@ import {
   type EffectiveN8nContext,
   type GlobalN8nInstance,
 } from './configuration-service.js';
+import {
+  ensureLocalN8nAuthBridgeRunning,
+  getLocalN8nAuthBridgeStatus,
+  stopLocalN8nAuthBridgePublicTunnel,
+} from './agent-tooling.js';
 
 export * from './configuration-service.js';
 export * from './agent-tooling.js';
@@ -84,6 +89,7 @@ export interface N8nRuntimeStatusSnapshot extends N8nHealthSnapshot {
     message: string;
   };
   tunnel?: N8nTunnelSnapshot;
+  authBridgeTunnel?: N8nTunnelSnapshot;
 }
 
 export type N8nRuntimeConsumer = 'vscode' | 'cli' | 'plugin' | 'agent' | 'manager';
@@ -1256,6 +1262,7 @@ export class N8nRuntimeOrchestrator {
         blocked: { code: 'docker-unavailable', message: formatCommandError(observedError) },
         checks: [{ id: 'docker', label: 'Docker', status: 'fail', message: formatCommandError(observedError) }],
         tunnel: tunnelSnapshotFromInstance(instance),
+        authBridgeTunnel: authBridgeTunnelSnapshot(),
       };
     }
 
@@ -1263,6 +1270,7 @@ export class N8nRuntimeOrchestrator {
     const health = await lifecycle.status();
     let tunnel = await lifecycle.getPublicTunnelStatus();
     if (tunnel.enabled && !tunnel.running) {
+      await stopLocalN8nAuthBridgePublicTunnel();
       await lifecycle.stopPublicTunnel();
       this.configuration.clearInstanceTunnel(instance.id);
       tunnel = { enabled: false, running: false };
@@ -1275,6 +1283,7 @@ export class N8nRuntimeOrchestrator {
       ready: health.status === 'ready' && !blocked,
       blocked,
       tunnel,
+      authBridgeTunnel: authBridgeTunnelSnapshot(),
     };
   }
 
@@ -1290,6 +1299,7 @@ export class N8nRuntimeOrchestrator {
       bootstrapOwner: input.bootstrapOwner ?? true,
     });
     await this.syncLifecycleSnapshot(instance, snapshot);
+    await this.ensureAuthBridgeTunnelIfNeeded(input.tunnel ?? Boolean(instance.tunnelPublicUrl || instance.tunnelTargetUrl));
     return this.getRuntimeStatus(instance.id);
   }
 
@@ -1314,6 +1324,7 @@ export class N8nRuntimeOrchestrator {
       return this.getRuntimeStatus(instance.id);
     }
     const lifecycle = await this.lifecycleForInstance(instance);
+    await stopLocalN8nAuthBridgePublicTunnel();
     await lifecycle.stopPublicTunnel();
     this.configuration.clearInstanceTunnel(instance.id);
     await lifecycle.stop();
@@ -1338,6 +1349,7 @@ export class N8nRuntimeOrchestrator {
     }
     const lifecycle = await this.lifecycleForInstance(instance);
     const result = await lifecycle.delete(input);
+    await stopLocalN8nAuthBridgePublicTunnel();
     this.configuration.clearInstanceTunnel(instance.id);
     return {
       ...result,
@@ -1345,6 +1357,7 @@ export class N8nRuntimeOrchestrator {
       managed: true,
       ready: false,
       tunnel: { enabled: false, running: false },
+      authBridgeTunnel: authBridgeTunnelSnapshot(),
     };
   }
 
@@ -1362,6 +1375,7 @@ export class N8nRuntimeOrchestrator {
     }
     await lifecycle.ensurePublicTunnel({ action: input.action ?? 'ensure' });
     await this.syncPrivateRuntimeState(instance);
+    await this.ensureAuthBridgeTunnelIfNeeded(true);
     return this.getRuntimeStatus(instance.id);
   }
 
@@ -1371,6 +1385,7 @@ export class N8nRuntimeOrchestrator {
       throw new Error(`Instance "${instance.name}" is not managed by n8n-manager; manage its tunnel outside n8n-manager.`);
     }
     const lifecycle = await this.lifecycleForInstance(instance);
+    await stopLocalN8nAuthBridgePublicTunnel();
     await lifecycle.stopPublicTunnel();
     this.configuration.clearInstanceTunnel(instance.id);
     await this.syncPrivateRuntimeState(instance);
@@ -1379,6 +1394,13 @@ export class N8nRuntimeOrchestrator {
 
   async cleanupInstanceProcesses(instanceId: string): Promise<N8nRuntimeStatusSnapshot> {
     return this.stopTunnel(instanceId);
+  }
+
+  private async ensureAuthBridgeTunnelIfNeeded(enabled: boolean): Promise<void> {
+    if (!enabled) {
+      return;
+    }
+    await ensureLocalN8nAuthBridgeRunning({ publicTunnel: true });
   }
 
   private requireInstance(instanceId: string): GlobalN8nInstance {
@@ -1451,6 +1473,19 @@ function tunnelSnapshotFromInstance(instance: GlobalN8nInstance): N8nTunnelSnaps
     publicUrl: instance.tunnelPublicUrl,
     targetUrl: instance.tunnelTargetUrl,
     pid: running ? instance.tunnelPid : undefined,
+  });
+}
+
+function authBridgeTunnelSnapshot(): N8nTunnelSnapshot {
+  const status = getLocalN8nAuthBridgeStatus();
+  const enabled = Boolean(status.publicUrl || status.tunnelTargetUrl || status.tunnelPid);
+  return stripUndefinedObject({
+    enabled,
+    running: Boolean(status.tunnelRunning),
+    publicUrl: status.publicUrl,
+    targetUrl: status.tunnelTargetUrl,
+    pid: status.tunnelPid,
+    startedAt: status.startedAt,
   });
 }
 

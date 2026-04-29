@@ -357,7 +357,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
 
     if (command === 'auth-bridge') {
       if (subcommand === 'start') {
-        await ensureLocalN8nAuthBridgeRunning();
+        await ensureLocalN8nAuthBridgeRunning({ publicTunnel: argv.includes('--tunnel') });
         printJson({ operation: 'auth-bridge.start', ...getLocalN8nAuthBridgeStatus() });
         return 0;
       }
@@ -575,7 +575,7 @@ Usage:
   n8n-manager agent instructions [--write PATH]
   n8n-manager presentWorkflowResult --workflow-id <id> [--instance <id-or-name>]
   n8n-manager auth-bridge status
-  n8n-manager auth-bridge start
+  n8n-manager auth-bridge start [--tunnel]
   n8n-manager status [--instance <id-or-name>]
   n8n-manager start [--instance <id-or-name>]
   n8n-manager stop [--instance <id-or-name>]

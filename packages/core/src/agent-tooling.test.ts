@@ -8,6 +8,7 @@ import {
   N8nConfigurationService,
   buildManagedN8nSameOriginWorkflowOpenPage,
   buildManagedN8nWorkflowOpenPage,
+  getLocalN8nAuthBridgeStatus,
   getN8nManagerAgentInstructions,
   presentWorkflowResult,
   resolveWorkflowWebviewOpen,
@@ -41,9 +42,55 @@ test('presentWorkflowResult returns a workflow embed payload from global config'
   assert.equal(result.kind, 'workflow');
   assert.equal(result.workflowId, 'wf-123');
   assert.equal(result.title, 'Demo');
-  assert.equal(result.workflowUrl, 'http://127.0.0.1:5678/workflow/wf-123');
   assert.equal(result.url, 'http://127.0.0.1:5678/workflow/wf-123');
   assert.equal(result.via, 'direct');
+  assert.equal('targetUrl' in result, false);
+  assert.equal('workflowUrl' in result, false);
+});
+
+test('presentWorkflowResult uses the public auth bridge URL for tunneled managed instances', async () => {
+  const baseDir = tempDir();
+  const previousHome = process.env.N8N_MANAGER_HOME;
+  process.env.N8N_MANAGER_HOME = baseDir;
+  try {
+    const runtimeStatePath = path.join(baseDir, 'runtime.json');
+    fs.writeFileSync(runtimeStatePath, JSON.stringify({
+      ownerEmail: 'owner@example.test',
+      ownerPassword: 'SecretPassword1',
+    }));
+    fs.writeFileSync(path.join(baseDir, 'local-open-bridge.json'), JSON.stringify({
+      port: 3791,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      publicUrl: 'https://auth-bridge.trycloudflare.com',
+      tunnelTargetUrl: 'http://127.0.0.1:3791',
+      tunnelPid: process.pid,
+    }));
+
+    const service = new N8nConfigurationService({ baseDir });
+    service.upsertInstance({
+      id: 'local',
+      name: 'Local',
+      mode: 'managed-local-docker',
+      baseUrl: 'http://127.0.0.1:5678',
+      tunnelPublicUrl: 'https://n8n.trycloudflare.com',
+      runtimeStatePath,
+    });
+
+    const result = await presentWorkflowResult({ workflowId: 'wf-123' }, service);
+
+    assert.equal(result.via, 'self-contained-auth');
+    assert.match(result.url, /^https:\/\/auth-bridge\.trycloudflare\.com\/open\/n8n-workflow\//);
+    assert.equal('targetUrl' in result, false);
+    assert.equal('workflowUrl' in result, false);
+    assert.equal(getLocalN8nAuthBridgeStatus().publicUrl, 'https://auth-bridge.trycloudflare.com');
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.N8N_MANAGER_HOME;
+    } else {
+      process.env.N8N_MANAGER_HOME = previousHome;
+    }
+  }
 });
 
 test('managed workflow open page posts owner credentials to n8n login', () => {

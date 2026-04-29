@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import https from 'node:https';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import {
   N8nConfigurationService,
@@ -14,7 +17,10 @@ import {
 const LOCAL_BRIDGE_HOST = '127.0.0.1';
 const DEFAULT_LOCAL_BRIDGE_PORT = 3791;
 const LOCAL_BRIDGE_START_TIMEOUT_MS = 8_000;
+const LOCAL_BRIDGE_TUNNEL_TIMEOUT_MS = 30_000;
+const CLOUDFLARE_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
 const WORKFLOW_EMBED_TYPE = 'workflow-embed';
+const execFileAsync = promisify(execFile);
 
 let serverPromise: Promise<void> | undefined;
 let server: Server | undefined;
@@ -45,19 +51,20 @@ export interface WorkflowEmbedPayload {
   kind: 'workflow';
   workflowId: string;
   url: string;
-  targetUrl: string;
   via: 'direct' | 'self-contained-auth';
   title?: string;
   diagram?: string;
   executionResult?: PresentWorkflowExecutionResult;
   presented: true;
-  workflowUrl: string;
 }
 
 export interface LocalOpenBridgeState {
   port: number;
   pid: number;
   startedAt: string;
+  publicUrl?: string;
+  tunnelTargetUrl?: string;
+  tunnelPid?: number;
 }
 
 export interface LocalOpenBridgeStatus {
@@ -65,6 +72,10 @@ export interface LocalOpenBridgeStatus {
   port?: number;
   pid?: number;
   url?: string;
+  publicUrl?: string;
+  tunnelTargetUrl?: string;
+  tunnelPid?: number;
+  tunnelRunning?: boolean;
   startedAt?: string;
   statePath: string;
 }
@@ -141,13 +152,11 @@ export async function presentWorkflowResult(
     kind: 'workflow',
     workflowId,
     url: link.openUrl,
-    targetUrl: link.targetUrl,
     via: link.via,
     title: cleanString(input.title),
     diagram: cleanString(input.diagram),
     executionResult: input.executionResult,
     presented: true,
-    workflowUrl,
   };
 }
 
@@ -215,35 +224,56 @@ export async function resolveWorkflowOpenLink(
     };
   }
 
-  await ensureLocalN8nAuthBridgeRunning();
+  const bridge = await ensureLocalN8nAuthBridgeRunning({ publicTunnel: Boolean(instance.tunnelPublicUrl) });
   return {
-    openUrl: buildLocalWorkflowOpenBridgeUrl(publicTargetUrl),
+    openUrl: buildLocalWorkflowOpenBridgeUrl(publicTargetUrl, bridge.publicUrl),
     targetUrl: publicTargetUrl,
     via: 'self-contained-auth',
   };
 }
 
-export async function ensureLocalN8nAuthBridgeRunning(): Promise<LocalOpenBridgeState> {
+export async function ensureLocalN8nAuthBridgeRunning(input: { publicTunnel?: boolean } = {}): Promise<LocalOpenBridgeState> {
   const existing = getActiveLocalOpenBridgeState();
   if (existing) {
     activePort = existing.port;
-    return existing;
+    return input.publicTunnel ? ensureLocalOpenBridgePublicTunnel(existing) : existing;
   }
 
   spawnLocalOpenBridgeProcess();
-  return waitForLocalOpenBridgeState(LOCAL_BRIDGE_START_TIMEOUT_MS);
+  const state = await waitForLocalOpenBridgeState(LOCAL_BRIDGE_START_TIMEOUT_MS);
+  return input.publicTunnel ? ensureLocalOpenBridgePublicTunnel(state) : state;
 }
 
 export function getLocalN8nAuthBridgeStatus(): LocalOpenBridgeStatus {
   const state = getActiveLocalOpenBridgeState();
+  const tunnelRunning = Boolean(state?.tunnelPid && isPidAlive(state.tunnelPid));
   return {
     running: Boolean(state),
     port: state?.port,
     pid: state?.pid,
     url: state ? `http://${LOCAL_BRIDGE_HOST}:${state.port}` : undefined,
+    publicUrl: tunnelRunning ? state?.publicUrl : undefined,
+    tunnelTargetUrl: tunnelRunning ? state?.tunnelTargetUrl : undefined,
+    tunnelPid: tunnelRunning ? state?.tunnelPid : undefined,
+    tunnelRunning,
     startedAt: state?.startedAt,
     statePath: getLocalOpenBridgeStatePath(),
   };
+}
+
+export async function stopLocalN8nAuthBridgePublicTunnel(): Promise<LocalOpenBridgeStatus> {
+  const state = getActiveLocalOpenBridgeState();
+  if (state?.tunnelPid && isPidAlive(state.tunnelPid)) {
+    await terminateProcess(state.tunnelPid);
+  }
+  if (state) {
+    saveLocalOpenBridgeState({
+      port: state.port,
+      pid: state.pid,
+      startedAt: state.startedAt,
+    });
+  }
+  return getLocalN8nAuthBridgeStatus();
 }
 
 export async function ensureLocalN8nAuthBridgeRunningInProcess(): Promise<LocalOpenBridgeState> {
@@ -656,9 +686,64 @@ function ensureTrailingSlash(value: string): string {
   return value.endsWith('/') ? value : `${value}/`;
 }
 
-function buildLocalWorkflowOpenBridgeUrl(target: string): string {
+async function ensureLocalOpenBridgePublicTunnel(state: LocalOpenBridgeState): Promise<LocalOpenBridgeState> {
+  const targetUrl = `http://${LOCAL_BRIDGE_HOST}:${state.port}`;
+  if (
+    state.publicUrl
+    && state.tunnelTargetUrl === targetUrl
+    && state.tunnelPid
+    && isPidAlive(state.tunnelPid)
+  ) {
+    return state;
+  }
+
+  if (state.tunnelPid && isPidAlive(state.tunnelPid)) {
+    await terminateProcess(state.tunnelPid);
+  }
+
+  const publicTunnel = await startCloudflaredTunnel(targetUrl);
+  const nextState: LocalOpenBridgeState = {
+    ...state,
+    publicUrl: publicTunnel.publicUrl,
+    tunnelTargetUrl: targetUrl,
+    tunnelPid: publicTunnel.pid,
+  };
+  saveLocalOpenBridgeState(nextState);
+  return nextState;
+}
+
+async function startCloudflaredTunnel(targetUrl: string): Promise<{ publicUrl: string; pid: number }> {
+  const bin = await installCloudflaredIfNeeded();
+  const logFile = path.join(os.tmpdir(), `n8n-manager-auth-bridge-cloudflared-${Date.now()}.log`);
+  const child = spawn(bin, ['tunnel', '--url', targetUrl, '--no-autoupdate', '--logfile', logFile], {
+    detached: true,
+    stdio: 'ignore',
+  });
+
+  if (!child.pid) {
+    throw new Error('cloudflared failed to start for n8n auth bridge.');
+  }
+
+  child.unref();
+  try {
+    const publicUrl = await waitForTunnelPublicUrl(child.pid, logFile);
+    return { publicUrl, pid: child.pid };
+  } catch (error) {
+    await terminateProcess(child.pid);
+    throw error;
+  } finally {
+    try {
+      fs.unlinkSync(logFile);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function buildLocalWorkflowOpenBridgeUrl(target: string, publicBridgeUrl?: string): string {
   const token = registerWorkflowOpenTarget(target);
-  return `http://${LOCAL_BRIDGE_HOST}:${activePort}/open/n8n-workflow/${token}`;
+  const baseUrl = publicBridgeUrl?.replace(/\/+$/, '') || `http://${LOCAL_BRIDGE_HOST}:${activePort}`;
+  return `${baseUrl}/open/n8n-workflow/${token}`;
 }
 
 function registerWorkflowOpenTarget(targetUrl: string): string {
@@ -719,8 +804,21 @@ function getActiveLocalOpenBridgeState(): LocalOpenBridgeState | undefined {
   const state = readLocalOpenBridgeState();
   if (!state) return undefined;
   if (!isPidAlive(state.pid)) {
+    if (state.tunnelPid && isPidAlive(state.tunnelPid)) {
+      void terminateProcess(state.tunnelPid);
+    }
     clearLocalOpenBridgeState();
     return undefined;
+  }
+  if (state.tunnelPid && !isPidAlive(state.tunnelPid)) {
+    const nextState = {
+      port: state.port,
+      pid: state.pid,
+      startedAt: state.startedAt,
+    };
+    saveLocalOpenBridgeState(nextState);
+    activePort = nextState.port;
+    return nextState;
   }
   activePort = state.port;
   return state;
@@ -732,7 +830,14 @@ function readLocalOpenBridgeState(): LocalOpenBridgeState | undefined {
     if (!fs.existsSync(statePath)) return undefined;
     const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Partial<LocalOpenBridgeState>;
     return typeof parsed.port === 'number' && typeof parsed.pid === 'number' && typeof parsed.startedAt === 'string'
-      ? { port: parsed.port, pid: parsed.pid, startedAt: parsed.startedAt }
+      ? {
+        port: parsed.port,
+        pid: parsed.pid,
+        startedAt: parsed.startedAt,
+        publicUrl: cleanString(parsed.publicUrl),
+        tunnelTargetUrl: cleanString(parsed.tunnelTargetUrl),
+        tunnelPid: typeof parsed.tunnelPid === 'number' ? parsed.tunnelPid : undefined,
+      }
       : undefined;
   } catch {
     return undefined;
@@ -758,6 +863,147 @@ function getOpenLinksDir(): string {
 
 function getBridgeTargetsPath(): string {
   return path.join(getOpenLinksDir(), 'bridge-targets.json');
+}
+
+async function installCloudflaredIfNeeded(): Promise<string> {
+  const existing = await findCloudflaredBinary();
+  if (existing) return existing;
+
+  const destPath = getLocalCloudflaredBinPath();
+  await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+  await downloadFile(resolveCloudflaredDownloadUrl(), destPath);
+  if (process.platform !== 'win32') {
+    await fs.promises.chmod(destPath, 0o755);
+  }
+  return destPath;
+}
+
+async function findCloudflaredBinary(): Promise<string | undefined> {
+  try {
+    const cmd = process.platform === 'win32' ? 'where' : 'which';
+    const { stdout } = await execFileAsync(cmd, ['cloudflared'], { encoding: 'utf8' });
+    return stdout.trim().split(/\r?\n/)[0]?.trim() || undefined;
+  } catch {
+    // Not in PATH.
+  }
+
+  const local = getLocalCloudflaredBinPath();
+  return fs.existsSync(local) ? local : undefined;
+}
+
+function getLocalCloudflaredBinPath(): string {
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  return path.join(resolveN8nManagerHome(), 'bin', `cloudflared${ext}`);
+}
+
+function resolveCloudflaredDownloadUrl(): string {
+  if (process.platform === 'linux') {
+    if (process.arch === 'arm64') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64';
+    if (process.arch === 'arm') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm';
+    return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64';
+  }
+  if (process.platform === 'darwin') {
+    if (process.arch === 'arm64') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64';
+    return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64';
+  }
+  if (process.platform === 'win32') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe';
+  throw new Error(`Unsupported platform for automatic cloudflared installation: ${process.platform}/${process.arch}.`);
+}
+
+function downloadFile(url: string, destPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const follow = (currentUrl: string, depth: number) => {
+      if (depth > 10) {
+        reject(new Error('Too many redirects downloading cloudflared.'));
+        return;
+      }
+
+      https.get(currentUrl, (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          follow(res.headers.location, depth + 1);
+          res.resume();
+          return;
+        }
+
+        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`Failed to download cloudflared: HTTP ${res.statusCode ?? 'unknown'}`));
+          res.resume();
+          return;
+        }
+
+        const tmpPath = `${destPath}.tmp`;
+        const file = fs.createWriteStream(tmpPath);
+        res.pipe(file);
+        file.on('finish', () => {
+          file.close();
+          fs.renameSync(tmpPath, destPath);
+          resolve();
+        });
+        file.on('error', reject);
+        res.on('error', reject);
+      }).on('error', reject);
+    };
+    follow(url, 0);
+  });
+}
+
+function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const interval = setInterval(() => {
+      try {
+        const text = fs.readFileSync(logFile, 'utf8');
+        const match = text.match(CLOUDFLARE_URL_PATTERN);
+        if (match) {
+          clearInterval(interval);
+          resolve(match[0]);
+          return;
+        }
+      } catch {
+        // Log file not written yet.
+      }
+
+      if (!isPidAlive(pid)) {
+        clearInterval(interval);
+        reject(new Error('cloudflared exited before emitting a public URL.'));
+        return;
+      }
+
+      if (Date.now() - startedAt > LOCAL_BRIDGE_TUNNEL_TIMEOUT_MS) {
+        clearInterval(interval);
+        reject(new Error('cloudflared did not emit a public URL within 30s.'));
+      }
+    }, 500);
+  });
+}
+
+async function terminateProcess(pid: number): Promise<void> {
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // Already gone.
+    }
+  }
+
+  const deadline = Date.now() + 5000;
+  while (isPidAlive(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!isPidAlive(pid)) {
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }
 }
 
 function isPidAlive(pid: number): boolean {

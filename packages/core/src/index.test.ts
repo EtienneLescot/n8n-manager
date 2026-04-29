@@ -264,6 +264,8 @@ test('runtime orchestrator reports Docker unavailable without retry loops', asyn
 
 test('runtime orchestrator reuses a live tunnel process for the same target', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-runtime-'));
+  const previousHome = process.env.N8N_MANAGER_HOME;
+  process.env.N8N_MANAGER_HOME = dir;
   const service = new N8nConfigurationService({ baseDir: dir });
   const statePath = service.getRuntimeStatePath('tunnel-managed');
   const dockerState: DockerState = { exists: true, running: true, commands: [] };
@@ -296,18 +298,36 @@ test('runtime orchestrator reuses a live tunnel process for the same target', as
     tunnelTargetUrl: 'http://127.0.0.1:5692',
     tunnelPid: process.pid,
   }, null, 2));
+  await fs.writeFile(path.join(dir, 'local-open-bridge.json'), JSON.stringify({
+    port: 3791,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    publicUrl: 'https://auth-bridge.trycloudflare.com',
+    tunnelTargetUrl: 'http://127.0.0.1:3791',
+    tunnelPid: process.pid,
+  }, null, 2));
 
-  const runtime = new N8nRuntimeOrchestrator({
-    configuration: service,
-    runner: createDockerRunner(dockerState),
-    waitForReady: false,
-  });
+  try {
+    const runtime = new N8nRuntimeOrchestrator({
+      configuration: service,
+      runner: createDockerRunner(dockerState),
+      waitForReady: false,
+    });
 
-  const status = await runtime.ensureTunnel('tunnel-managed', { action: 'ensure' });
+    const status = await runtime.ensureTunnel('tunnel-managed', { action: 'ensure' });
 
-  assert.equal(status.tunnel?.running, true);
-  assert.equal(status.tunnel?.publicUrl, 'https://stable.trycloudflare.com');
-  assert.ok(!dockerState.commands.some((command) => command.startsWith('docker rm -f tunnel-managed')));
+    assert.equal(status.tunnel?.running, true);
+    assert.equal(status.tunnel?.publicUrl, 'https://stable.trycloudflare.com');
+    assert.equal(status.authBridgeTunnel?.running, true);
+    assert.equal(status.authBridgeTunnel?.publicUrl, 'https://auth-bridge.trycloudflare.com');
+    assert.ok(!dockerState.commands.some((command) => command.startsWith('docker rm -f tunnel-managed')));
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.N8N_MANAGER_HOME;
+    } else {
+      process.env.N8N_MANAGER_HOME = previousHome;
+    }
+  }
 });
 
 test('managed-local-docker delete removes the container and can destroy the volume with force', async () => {
