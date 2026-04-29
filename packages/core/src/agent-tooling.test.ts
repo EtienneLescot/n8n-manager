@@ -19,9 +19,12 @@ function tempDir(): string {
 }
 
 test('agent instructions describe n8n-manager shell tools', () => {
-  const instructions = getN8nManagerAgentInstructions({ command: 'node ./n8n-manager.js' });
+  const instructions = getN8nManagerAgentInstructions({
+    command: 'node ./n8n-manager.js',
+    workspaceRoot: '/tmp/example workspace',
+  });
 
-  assert.match(instructions, /presentWorkflowResult --workflow-id/);
+  assert.match(instructions, /presentWorkflowResult --workflow-id <workflowId> --workspace-root '\/tmp\/example workspace'/);
   assert.match(instructions, /llm-proxy status/);
   assert.match(instructions, /Do not loop/);
   assert.match(instructions, /node \.\/n8n-manager\.js/);
@@ -46,6 +49,32 @@ test('presentWorkflowResult returns a workflow embed payload from global config'
   assert.equal(result.via, 'direct');
   assert.equal('targetUrl' in result, false);
   assert.equal('workflowUrl' in result, false);
+});
+
+test('presentWorkflowResult resolves the workspace-pinned instance before global active', async () => {
+  const workspaceRoot = tempDir();
+  const service = new N8nConfigurationService({ baseDir: tempDir() });
+  service.upsertInstance({
+    id: 'global',
+    name: 'Global',
+    mode: 'existing',
+    baseUrl: 'http://global.example.test',
+  });
+  service.upsertInstance({
+    id: 'workspace',
+    name: 'Workspace',
+    mode: 'existing',
+    baseUrl: 'http://workspace.example.test',
+  }, { setActive: false });
+  service.writeWorkspaceOverrides(workspaceRoot, {
+    version: 3,
+    activeInstanceId: 'workspace',
+  });
+
+  const result = await presentWorkflowResult({ workflowId: 'wf-123', workspaceRoot }, service);
+
+  assert.equal(result.url, 'http://workspace.example.test/workflow/wf-123');
+  assert.equal(result.via, 'direct');
 });
 
 test('presentWorkflowResult uses the public auth bridge URL for tunneled managed instances', async () => {

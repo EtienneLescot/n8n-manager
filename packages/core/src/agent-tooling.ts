@@ -28,6 +28,7 @@ let activePort = DEFAULT_LOCAL_BRIDGE_PORT;
 
 export interface N8nManagerAgentInstructionsOptions {
   command?: string;
+  workspaceRoot?: string;
 }
 
 export interface PresentWorkflowExecutionResult {
@@ -44,6 +45,7 @@ export interface PresentWorkflowResultInput {
   diagram?: string;
   executionResult?: PresentWorkflowExecutionResult;
   instanceId?: string;
+  workspaceRoot?: string;
 }
 
 export interface WorkflowEmbedPayload {
@@ -107,12 +109,13 @@ export interface WorkflowWebviewOpenPayload {
 
 export function getN8nManagerAgentInstructions(options: N8nManagerAgentInstructionsOptions = {}): string {
   const command = options.command?.trim() || 'n8n-manager';
+  const workspaceRootFlag = formatWorkspaceRootFlag(options.workspaceRoot);
   return [
     '# n8n-manager Agent Tools',
     '',
     'The following `n8n-manager` commands are available in your shell and should be run with the shell tool when needed:',
     '',
-    `- use \`${command} presentWorkflowResult --workflow-id <workflowId>\` — present or reference a specific n8n workflow by its ID. Run this whenever you are presenting a workflow or the user requests the workflow URL. This allows compatible surfaces to render the workflow link and graph correctly.`,
+    `- use \`${command} presentWorkflowResult --workflow-id <workflowId>${workspaceRootFlag}\` — present or reference a specific n8n workflow by its ID. Run this whenever you are presenting a workflow or the user requests the workflow URL. This allows compatible surfaces to render the workflow link and graph correctly.`,
     '  - After running a workflow via `n8nac` or similar, you MUST call this command to present the result.',
     '  - After running it, do not restate the raw JSON payload.',
     '  - If the user only asked to present or open the workflow, keep the follow-up text minimal. Do not paraphrase the full workflow structure unless the user explicitly asked for an explanation.',
@@ -121,7 +124,7 @@ export function getN8nManagerAgentInstructions(options: N8nManagerAgentInstructi
     '',
     '## Workflow Creation/Modification/Execution Guidelines',
     '',
-    `- After creation/modification/execution of a workflow via \`n8nac\`, you MUST call \`${command} presentWorkflowResult --workflow-id <id>\` to present the result to the user.`,
+    `- After creation/modification/execution of a workflow via \`n8nac\`, you MUST call \`${command} presentWorkflowResult --workflow-id <id>${workspaceRootFlag}\` to present the result to the user.`,
     '- If workflow activation fails repeatedly, you MUST stop retrying. Do not continue attempting the same failed activation.',
     '  - Summarize the failure to the user.',
     '  - Explain what went wrong.',
@@ -129,6 +132,15 @@ export function getN8nManagerAgentInstructions(options: N8nManagerAgentInstructi
     '- Only retry if new information changes the situation.',
     '- Do not loop. If you have already tried 2-3 times and it keeps failing, stop and explain the situation.',
   ].join('\n');
+}
+
+function formatWorkspaceRootFlag(workspaceRoot?: string): string {
+  const trimmed = workspaceRoot?.trim();
+  return trimmed ? ` --workspace-root ${quoteShellArg(trimmed)}` : '';
+}
+
+function quoteShellArg(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export async function presentWorkflowResult(
@@ -141,8 +153,9 @@ export async function presentWorkflowResult(
   }
 
   const context = configuration.resolveEffectiveContext({
+    workspaceRoot: input.workspaceRoot,
     instanceId: input.instanceId,
-    syncFolderDefault: 'global',
+    syncFolderDefault: input.workspaceRoot ? 'workspace' : 'global',
   });
   const workflowUrl = resolveWorkflowUrl(workflowId, context.host, input.workflowUrl);
   const link = await resolveWorkflowOpenLink(workflowUrl, context.instance);

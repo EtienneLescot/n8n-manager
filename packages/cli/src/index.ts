@@ -327,7 +327,10 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
 
     if (command === 'agent') {
       if (subcommand === 'instructions' || subcommand === 'context' || !subcommand) {
-        const content = getN8nManagerAgentInstructions({ command: readFlag(argv, '--command') ?? 'n8n-manager' });
+        const content = getN8nManagerAgentInstructions({
+          command: readFlag(argv, '--command') ?? 'n8n-manager',
+          workspaceRoot: readFlag(argv, '--workspace-root') ?? inferWorkspaceRootFromCwd(),
+        });
         const outputPath = readFlag(argv, '--write');
         if (outputPath) {
           fs.mkdirSync(path.dirname(outputPath), { recursive: true });
@@ -345,12 +348,14 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
       const selected = readFlag(argv, '--instance')
         ? resolveInstance(config, readFlag(argv, '--instance'), { required: true })
         : undefined;
+      const workspaceRoot = readFlag(argv, '--workspace-root') ?? inferWorkspaceRootFromCwd();
       printJson(await presentWorkflowResult({
         workflowId,
         workflowUrl: readFlag(argv, '--workflow-url'),
         title: readFlag(argv, '--title'),
         diagram: readFlag(argv, '--diagram'),
         instanceId: selected?.id,
+        workspaceRoot,
       }, config));
       return 0;
     }
@@ -459,6 +464,20 @@ function readFlag(argv: string[], flag: string): string | undefined {
   const prefix = `${flag}=`;
   const match = argv.find((arg) => arg.startsWith(prefix));
   return match ? match.slice(prefix.length) : undefined;
+}
+
+function inferWorkspaceRootFromCwd(cwd = process.cwd()): string | undefined {
+  let current = path.resolve(cwd);
+  while (true) {
+    if (fs.existsSync(path.join(current, 'n8nac-config.json'))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
 }
 
 function parseKeyValueFlags(argv: string[]): Record<string, string> {
@@ -572,8 +591,8 @@ Usage:
   n8n-manager auth test [--instance <id-or-name>]
   n8n-manager projects list [--instance <id-or-name>]
   n8n-manager projects select <project-id-or-name> [--instance <id-or-name>]
-  n8n-manager agent instructions [--write PATH]
-  n8n-manager presentWorkflowResult --workflow-id <id> [--instance <id-or-name>]
+  n8n-manager agent instructions [--write PATH] [--workspace-root PATH]
+  n8n-manager presentWorkflowResult --workflow-id <id> [--instance <id-or-name>] [--workspace-root PATH]
   n8n-manager auth-bridge status
   n8n-manager auth-bridge start [--tunnel]
   n8n-manager status [--instance <id-or-name>]

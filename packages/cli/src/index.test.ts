@@ -135,9 +135,16 @@ test('CLI exposes agent instructions and workflow presentation payloads', async 
     ]));
     assert.equal(added.code, 0);
 
-    const instructions = await captureStdout(() => runCli(['agent', 'instructions', '--command', 'node ./n8n-manager.js']));
+    const instructions = await captureStdout(() => runCli([
+      'agent',
+      'instructions',
+      '--command',
+      'node ./n8n-manager.js',
+      '--workspace-root',
+      '/tmp/n8n-workspace',
+    ]));
     assert.equal(instructions.code, 0);
-    assert.match(instructions.stdout, /presentWorkflowResult --workflow-id/);
+    assert.match(instructions.stdout, /presentWorkflowResult --workflow-id <workflowId> --workspace-root '\/tmp\/n8n-workspace'/);
     assert.match(instructions.stdout, /node \.\/n8n-manager\.js llm-proxy status/);
 
     const presented = await captureStdout(() => runCli([
@@ -154,6 +161,40 @@ test('CLI exposes agent instructions and workflow presentation payloads', async 
     assert.equal(payload.__type, 'workflow-embed');
     assert.equal(payload.workflowId, 'wf-123');
     assert.equal(payload.url, 'http://127.0.0.1:5678/workflow/wf-123');
+
+    const global = await captureStdout(() => runCli([
+      'instances',
+      'add',
+      '--id',
+      'global',
+      '--name',
+      'Global',
+      '--mode',
+      'existing',
+      '--url',
+      'http://global.example.test',
+    ]));
+    assert.equal(global.code, 0);
+
+    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'n8n-manager-cli-workspace-'));
+    fs.writeFileSync(path.join(workspaceRoot, 'n8nac-config.json'), JSON.stringify({
+      version: 3,
+      activeInstanceId: 'local',
+    }));
+    const previousCwd = process.cwd();
+    process.chdir(workspaceRoot);
+    try {
+      const workspacePresented = await captureStdout(() => runCli([
+        'presentWorkflowResult',
+        '--workflow-id',
+        'wf-workspace',
+      ]));
+      assert.equal(workspacePresented.code, 0);
+      assert.equal(JSON.parse(workspacePresented.stdout).url, 'http://127.0.0.1:5678/workflow/wf-workspace');
+    } finally {
+      process.chdir(previousCwd);
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
 
     const bridge = await captureStdout(() => runCli(['auth-bridge', 'status']));
     assert.equal(bridge.code, 0);
