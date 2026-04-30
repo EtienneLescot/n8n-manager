@@ -274,6 +274,20 @@ export function getLocalN8nAuthBridgeStatus(): LocalOpenBridgeStatus {
   };
 }
 
+export async function getManagedN8nAuthBridgeOpenUrl(instance: GlobalN8nInstance): Promise<string | undefined> {
+  const status = getLocalN8nAuthBridgeStatus();
+  const bridgePublicUrl = status.publicUrl;
+  const targetUrl = instance.tunnelPublicUrl ?? instance.baseUrl;
+  if (!bridgePublicUrl || !targetUrl) {
+    return undefined;
+  }
+  const credentials = await resolveManagedN8nOwnerCredentialsForInstance(instance);
+  if (!credentials) {
+    return undefined;
+  }
+  return buildLocalWorkflowOpenBridgeUrl(targetUrl, bridgePublicUrl);
+}
+
 export async function stopLocalN8nAuthBridgePublicTunnel(): Promise<LocalOpenBridgeStatus> {
   const state = getActiveLocalOpenBridgeState();
   if (state?.tunnelPid && isPidAlive(state.tunnelPid)) {

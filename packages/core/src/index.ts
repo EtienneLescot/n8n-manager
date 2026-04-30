@@ -16,6 +16,7 @@ import {
 } from './configuration-service.js';
 import {
   ensureLocalN8nAuthBridgeRunning,
+  getManagedN8nAuthBridgeOpenUrl,
   getLocalN8nAuthBridgeStatus,
   stopLocalN8nAuthBridgePublicTunnel,
 } from './agent-tooling.js';
@@ -93,6 +94,8 @@ export interface N8nRuntimeStatusSnapshot extends N8nHealthSnapshot {
   };
   tunnel?: N8nTunnelSnapshot;
   authBridgeTunnel?: N8nTunnelSnapshot;
+  authBridgeOpenUrl?: string;
+  warnings?: string[];
 }
 
 export type N8nRuntimeConsumer = 'vscode' | 'cli' | 'plugin' | 'agent' | 'manager';
@@ -1297,6 +1300,10 @@ export class N8nRuntimeOrchestrator {
     const health = await lifecycle.status();
     const tunnel = await lifecycle.getPublicTunnelStatus();
     const blocked = blockedFromHealth(health, instance);
+    const authBridgeTunnel = authBridgeTunnelSnapshot();
+    const authBridgeOpenUrl = authBridgeTunnel.publicUrl
+      ? await getManagedN8nAuthBridgeOpenUrl(instance)
+      : undefined;
     return {
       ...health,
       instanceId: instance.id,
@@ -1304,7 +1311,8 @@ export class N8nRuntimeOrchestrator {
       ready: health.status === 'ready' && !blocked,
       blocked,
       tunnel,
-      authBridgeTunnel: authBridgeTunnelSnapshot(),
+      authBridgeTunnel,
+      authBridgeOpenUrl,
     };
   }
 
@@ -1320,8 +1328,9 @@ export class N8nRuntimeOrchestrator {
       bootstrapOwner: input.bootstrapOwner ?? true,
     });
     await this.syncLifecycleSnapshot(instance, snapshot);
-    await this.ensureAuthBridgeTunnelIfNeeded(Boolean(snapshot.tunnelPublicUrl));
-    return this.getRuntimeStatus(instance.id);
+    const warnings = await this.ensureAuthBridgeTunnelIfNeeded(Boolean(snapshot.tunnelPublicUrl));
+    const status = await this.getRuntimeStatus(instance.id);
+    return warnings.length ? { ...status, warnings } : status;
   }
 
   async startInstance(instanceId: string, input: { ensurePublicUrl?: boolean } = {}): Promise<N8nRuntimeStatusSnapshot> {
@@ -1403,8 +1412,9 @@ export class N8nRuntimeOrchestrator {
     }
     await lifecycle.ensurePublicTunnel({ action: input.action ?? 'ensure' });
     await this.syncPrivateRuntimeState(instance);
-    await this.ensureAuthBridgeTunnelIfNeeded(true);
-    return this.getRuntimeStatus(instance.id);
+    const warnings = await this.ensureAuthBridgeTunnelIfNeeded(true);
+    const status = await this.getRuntimeStatus(instance.id);
+    return warnings.length ? { ...status, warnings } : status;
   }
 
   async stopTunnel(instanceId: string): Promise<N8nRuntimeStatusSnapshot> {
@@ -1425,11 +1435,17 @@ export class N8nRuntimeOrchestrator {
     return this.getRuntimeStatus(instance.id);
   }
 
-  private async ensureAuthBridgeTunnelIfNeeded(enabled: boolean): Promise<void> {
+  private async ensureAuthBridgeTunnelIfNeeded(enabled: boolean): Promise<string[]> {
     if (!enabled) {
-      return;
+      return [];
     }
-    await ensureLocalN8nAuthBridgeRunning({ publicTunnel: true });
+    try {
+      await ensureLocalN8nAuthBridgeRunning({ publicTunnel: true });
+      return [];
+    } catch (error) {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      return [`Auto-login URL could not be created. The public n8n URL is available, but it is not auto-authenticated. ${detail}`];
+    }
   }
 
   private async cleanupTunnelWorkers(instance: GlobalN8nInstance, input: { disablePublicUrl: boolean }): Promise<void> {
