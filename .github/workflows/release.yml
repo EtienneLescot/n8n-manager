@@ -1,0 +1,201 @@
+name: Release
+
+on:
+  push:
+    branches: [main, next]
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release-please:
+    name: Release Please
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run release-please
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  release-please-next:
+    name: Release Please Next
+    if: github.ref == 'refs/heads/next' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run release-please
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit version bump
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet || git commit -m "chore: release next version"
+
+      - name: Push version bump
+        run: git push origin next
+
+  publish-stable:
+    name: Publish Stable
+    if: github.ref == 'refs/heads/main'
+    needs: release-please
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14'
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Upgrade npm for trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build all packages
+        run: npm run build
+
+      - name: Publish npm packages
+        run: |
+          for pkg in \
+            "@n8n-as-code/n8n-manager-core:packages/core" \
+            "@n8n-as-code/n8n-credentials-manager:packages/credentials-manager" \
+            "@n8n-as-code/n8n-manager:packages/cli"
+          do
+            pkg_name="${pkg%%:*}"
+            pkg_dir="${pkg##*:}"
+            version=$(node -p "require('./${pkg_dir}/package.json').version")
+            if npm view "${pkg_name}@${version}" version >/dev/null 2>&1; then
+              echo "ℹ️ ${pkg_name}@${version} already exists on npm, skipping publish."
+            else
+              (cd "$pkg_dir" && npm publish --access public --tag latest)
+            fi
+          done
+
+      - name: Push git tags
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for pkg in \
+            "@n8n-as-code/n8n-manager-core:packages/core" \
+            "@n8n-as-code/n8n-credentials-manager:packages/credentials-manager" \
+            "@n8n-as-code/n8n-manager:packages/cli"
+          do
+            pkg_name="${pkg%%:*}"
+            pkg_dir="${pkg##*:}"
+            version=$(node -p "require('./${pkg_dir}/package.json').version")
+            tag="${pkg_name##@}@v${version}"
+            tag="${tag//\//-}"
+            if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              git tag "${tag}"
+            fi
+          done
+          git push origin --tags
+
+  publish-next:
+    name: Publish Next
+    if: github.ref == 'refs/heads/next' && github.event_name == 'push'
+    needs: release-please-next
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14'
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Upgrade npm for trusted publishing
+        run: |
+          npm install -g npm@^11.5.1
+          npm --version
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build all packages
+        run: npm run build
+
+      - name: Publish npm packages
+        run: |
+          for pkg in \
+            "@n8n-as-code/n8n-manager-core:packages/core" \
+            "@n8n-as-code/n8n-credentials-manager:packages/credentials-manager" \
+            "@n8n-as-code/n8n-manager:packages/cli"
+          do
+            pkg_name="${pkg%%:*}"
+            pkg_dir="${pkg##*:}"
+            version=$(node -p "require('./${pkg_dir}/package.json').version")
+            if npm view "${pkg_name}@${version}" version >/dev/null 2>&1; then
+              echo "ℹ️ ${pkg_name}@${version} already exists on npm, skipping publish."
+            else
+              (cd "$pkg_dir" && npm publish --access public --tag next)
+            fi
+          done
+
+      - name: Push git tags
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          for pkg in \
+            "@n8n-as-code/n8n-manager-core:packages/core" \
+            "@n8n-as-code/n8n-credentials-manager:packages/credentials-manager" \
+            "@n8n-as-code/n8n-manager:packages/cli"
+          do
+            pkg_name="${pkg%%:*}"
+            pkg_dir="${pkg##*:}"
+            version=$(node -p "require('./${pkg_dir}/package.json').version")
+            tag="${pkg_name##@}@v${version}"
+            tag="${tag//\//-}"
+            if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              git tag "${tag}"
+            fi
+          done
+          git push origin --tags
