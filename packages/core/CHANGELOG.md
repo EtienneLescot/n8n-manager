@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.2.0...@n8n-as-code/n8n-manager-core-v0.2.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* add repository metadata for trusted publishing ([18ea97d](https://github.com/EtienneLescot/n8n-manager/commit/18ea97d53bce9a50655d4a778d1121f7bb63c0d2))
+
 ## [0.2.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.1.0...@n8n-as-code/n8n-manager-core-v0.2.0) (2026-04-30)
 
 
