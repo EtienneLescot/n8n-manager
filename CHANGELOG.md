@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/EtienneLescot/n8n-manager/compare/v1.0.1...v1.0.2) (2026-04-30)
+
+
+### Bug Fixes
+
+* test workflow after merge ([f86a85f](https://github.com/EtienneLescot/n8n-manager/commit/f86a85fa9076cf293e2a75a47e1c6f242ae2184a))
+
 ## [1.0.1](https://github.com/EtienneLescot/n8n-manager/compare/v1.0.0...v1.0.1) (2026-04-30)
 
 
