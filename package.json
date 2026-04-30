@@ -1,6 +1,6 @@
 {
   "name": "n8n-manager-monorepo",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "Ready-to-run n8n environment manager for humans and AI agents.",
   "type": "module",
