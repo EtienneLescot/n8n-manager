@@ -14,49 +14,28 @@ permissions:
 jobs:
   release-please:
     name: Release Please
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Run release-please
+        id: release
         uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
-
-  release-please-next:
-    name: Release Please Next
-    if: github.ref == 'refs/heads/next' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run release-please
-        uses: googleapis/release-please-action@v4
-        with:
-          config-file: release-please-config.json
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Commit version bump
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --quiet || git commit -m "chore: release next version"
-
-      - name: Push version bump
-        run: git push origin next
 
   publish-stable:
     name: Publish Stable
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.release-please.outputs.releases_created == 'true'
     needs: release-please
     runs-on: ubuntu-latest
     environment: prod
@@ -67,6 +46,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -101,36 +81,128 @@ jobs:
             pkg_dir="${pkg##*:}"
             version=$(node -p "require('./${pkg_dir}/package.json').version")
             if npm view "${pkg_name}@${version}" version >/dev/null 2>&1; then
-              echo "ℹ️ ${pkg_name}@${version} already exists on npm, skipping publish."
+              echo "${pkg_name}@${version} already exists on npm, skipping publish."
             else
               (cd "$pkg_dir" && npm publish --access public --tag latest)
             fi
           done
 
-      - name: Push git tags
+  prepare-next:
+    name: Prepare Next Version
+    if: github.ref == 'refs/heads/next' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.next-version.outputs.changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14'
+
+      - name: Compute next prerelease version
+        id: next-version
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          for pkg in \
-            "@n8n-as-code/n8n-manager-core:packages/core" \
-            "@n8n-as-code/n8n-credentials-manager:packages/credentials-manager" \
-            "@n8n-as-code/n8n-manager:packages/cli"
-          do
-            pkg_name="${pkg%%:*}"
-            pkg_dir="${pkg##*:}"
-            version=$(node -p "require('./${pkg_dir}/package.json').version")
-            tag="${pkg_name##@}@v${version}"
-            tag="${tag//\//-}"
-            if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-              git tag "${tag}"
-            fi
-          done
-          git push origin --tags
+          node <<'NODE'
+          const fs = require('fs');
+          const { execFileSync } = require('child_process');
+
+          function exec(args) {
+            return execFileSync('git', args, { encoding: 'utf8' }).trim();
+          }
+
+          function parse(version) {
+            const [major, minor, patch] = version.split('-')[0].split('.').map(Number);
+            return { major, minor, patch };
+          }
+
+          function format({ major, minor, patch }) {
+            return `${major}.${minor}.${patch}`;
+          }
+
+          function bump(version, level) {
+            const next = parse(version);
+            if (level === 'major') {
+              next.major += 1;
+              next.minor = 0;
+              next.patch = 0;
+            } else if (level === 'minor') {
+              next.minor += 1;
+              next.patch = 0;
+            } else {
+              next.patch += 1;
+            }
+            return format(next);
+          }
+
+          const packages = [
+            'packages/core',
+            'packages/credentials-manager',
+            'packages/cli',
+          ];
+          const currentVersion = JSON.parse(fs.readFileSync('packages/cli/package.json', 'utf8')).version;
+
+          let range = '';
+          try {
+            range = `${exec(['describe', '--tags', '--abbrev=0'])}..HEAD`;
+          } catch {
+            range = 'HEAD';
+          }
+
+          const commits = exec(['log', '--format=%s%n%b', range]);
+          if (!commits.trim()) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'changed=false\n');
+            process.exit(0);
+          }
+
+          const level = /BREAKING CHANGE|^[a-z]+(?:\(.+\))?!:/m.test(commits)
+            ? 'major'
+            : /^feat(?:\(.+\))?:/m.test(commits)
+              ? 'minor'
+              : /^fix(?:\(.+\))?:/m.test(commits)
+                ? 'patch'
+                : null;
+
+          if (!level) {
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'changed=false\n');
+            process.exit(0);
+          }
+
+          const baseVersion = bump(currentVersion, level);
+          const version = `${baseVersion}-next.${process.env.GITHUB_RUN_NUMBER}`;
+          for (const dir of packages) {
+            const path = `${dir}/package.json`;
+            const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+            pkg.version = version;
+            fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `changed=true\nversion=${version}\n`);
+          NODE
+
+      - name: Refresh lockfile
+        if: steps.next-version.outputs.changed == 'true'
+        run: npm install --package-lock-only
+
+      - name: Upload next package metadata
+        if: steps.next-version.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-package-metadata
+          path: |
+            package-lock.json
+            packages/core/package.json
+            packages/credentials-manager/package.json
+            packages/cli/package.json
 
   publish-next:
     name: Publish Next
-    if: github.ref == 'refs/heads/next' && github.event_name == 'push'
-    needs: release-please-next
+    if: github.ref == 'refs/heads/next' && needs.prepare-next.outputs.changed == 'true'
+    needs: prepare-next
     runs-on: ubuntu-latest
     environment: prod
     env:
@@ -140,6 +212,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download next package metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: next-package-metadata
+          path: .
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -174,28 +253,8 @@ jobs:
             pkg_dir="${pkg##*:}"
             version=$(node -p "require('./${pkg_dir}/package.json').version")
             if npm view "${pkg_name}@${version}" version >/dev/null 2>&1; then
-              echo "ℹ️ ${pkg_name}@${version} already exists on npm, skipping publish."
+              echo "${pkg_name}@${version} already exists on npm, skipping publish."
             else
               (cd "$pkg_dir" && npm publish --access public --tag next)
             fi
           done
-
-      - name: Push git tags
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          for pkg in \
-            "@n8n-as-code/n8n-manager-core:packages/core" \
-            "@n8n-as-code/n8n-credentials-manager:packages/credentials-manager" \
-            "@n8n-as-code/n8n-manager:packages/cli"
-          do
-            pkg_name="${pkg%%:*}"
-            pkg_dir="${pkg##*:}"
-            version=$(node -p "require('./${pkg_dir}/package.json').version")
-            tag="${pkg_name##@}@v${version}"
-            tag="${tag//\//-}"
-            if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-              git tag "${tag}"
-            fi
-          done
-          git push origin --tags

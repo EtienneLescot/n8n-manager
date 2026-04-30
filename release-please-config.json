@@ -1,9 +1,20 @@
 {
+  "include-component-in-tag": true,
   "packages": {
-    ".": {
+    "packages/core": {
       "release-type": "node",
-      "changelog-path": "CHANGELOG.md",
-      "skip-github-release": true
+      "package-name": "@n8n-as-code/n8n-manager-core",
+      "component": "@n8n-as-code/n8n-manager-core"
+    },
+    "packages/credentials-manager": {
+      "release-type": "node",
+      "package-name": "@n8n-as-code/n8n-credentials-manager",
+      "component": "@n8n-as-code/n8n-credentials-manager"
+    },
+    "packages/cli": {
+      "release-type": "node",
+      "package-name": "@n8n-as-code/n8n-manager",
+      "component": "@n8n-as-code/n8n-manager"
     }
   }
 }
