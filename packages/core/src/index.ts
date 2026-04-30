@@ -294,7 +294,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
   private readonly dockerImage: string;
   private readonly containerName: string;
   private readonly volumeName: string;
-  private readonly port: number;
+  private port: number;
   private readonly bootstrapOwnerDefault: boolean;
   private readonly tunnelDefault: boolean;
   private readonly cloudflaredBin?: string;
@@ -427,10 +427,19 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       if (!inspected.exists) {
         await this.ensureDockerContainer(instance.tunnelPublicUrl);
       } else if (!inspected.running) {
-        await this.runner('docker', ['start', instance.containerName ?? this.containerName]);
+        try {
+          await this.runner('docker', ['start', instance.containerName ?? this.containerName]);
+        } catch (error) {
+          if (!isDockerPortUnavailableError(error)) {
+            throw error;
+          }
+          await this.removeDockerContainer(instance.containerName ?? this.containerName);
+          await this.runDockerContainerWithPortFallback(instance.tunnelPublicUrl);
+        }
       }
-      if (this.waitForReady && instance.baseUrl) {
-        await this.waitForN8nReady(instance.baseUrl);
+      const next = await this.updateManagedLocalBaseUrlIfNeeded(instance);
+      if (this.waitForReady && next.baseUrl) {
+        await this.waitForN8nReady(next.baseUrl);
       }
     }
     return this.status();
@@ -602,12 +611,33 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       if (existing.running) {
         return;
       }
-      await this.runner('docker', ['start', this.containerName]);
+      try {
+        await this.runner('docker', ['start', this.containerName]);
+      } catch (error) {
+        if (!isDockerPortUnavailableError(error)) {
+          throw error;
+        }
+        await this.removeDockerContainer(this.containerName);
+        await this.runDockerContainerWithPortFallback(tunnelPublicUrl);
+      }
       return;
     }
 
+    await this.runDockerContainerWithPortFallback(tunnelPublicUrl);
+  }
+
+  private async runDockerContainerWithPortFallback(tunnelPublicUrl?: string): Promise<void> {
     await this.runner('docker', ['volume', 'create', this.volumeName]);
-    await this.runner('docker', this.buildDockerRunArgs(tunnelPublicUrl));
+    try {
+      await this.runner('docker', this.buildDockerRunArgs(tunnelPublicUrl));
+      return;
+    } catch (error) {
+      if (!isDockerPortUnavailableError(error)) {
+        throw error;
+      }
+      this.port = await findAvailableHostPort(this.port + 1);
+      await this.runner('docker', this.buildDockerRunArgs(tunnelPublicUrl));
+    }
   }
 
   private buildDockerRunArgs(tunnelPublicUrl?: string): string[] {
@@ -653,7 +683,21 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       return;
     }
     await this.runner('docker', ['rm', '-f', this.containerName]);
-    await this.runner('docker', this.buildDockerRunArgs(tunnelPublicUrl));
+    await this.runDockerContainerWithPortFallback(tunnelPublicUrl);
+  }
+
+  private async updateManagedLocalBaseUrlIfNeeded(instance: N8nInstanceRef): Promise<N8nInstanceRef> {
+    const baseUrl = `http://127.0.0.1:${this.port}`;
+    if (instance.baseUrl === baseUrl) {
+      return instance;
+    }
+    const next = {
+      ...instance,
+      baseUrl,
+      tunnelTargetUrl: instance.tunnelTargetUrl === instance.baseUrl ? baseUrl : instance.tunnelTargetUrl,
+    };
+    await this.writeInstance(next);
+    return next;
   }
 
   private async requireDocker(): Promise<void> {
@@ -1842,6 +1886,10 @@ async function findAvailableManagedPort(instances: GlobalN8nInstance[], currentI
   );
   const startPort = Number(process.env.N8N_MANAGER_DOCKER_PORT ?? DEFAULT_PORT);
 
+  return findAvailableHostPort(startPort, usedPorts);
+}
+
+async function findAvailableHostPort(startPort: number, usedPorts = new Set<number>()): Promise<number> {
   for (let port = startPort; port < startPort + 200; port += 1) {
     if (usedPorts.has(port)) {
       continue;
@@ -1852,6 +1900,15 @@ async function findAvailableManagedPort(instances: GlobalN8nInstance[], currentI
   }
 
   throw new Error(`No available local port found for managed n8n between ${startPort} and ${startPort + 199}.`);
+}
+
+function isDockerPortUnavailableError(error: unknown): boolean {
+  const message = formatCommandError(error).toLowerCase();
+  return message.includes('ports are not available')
+    || message.includes('port is already allocated')
+    || message.includes('address already in use')
+    || message.includes('/forwards/expose')
+    || message.includes('bind for 0.0.0.0');
 }
 
 function isTcpPortAvailable(port: number): Promise<boolean> {

@@ -219,6 +219,63 @@ test('runtime orchestrator recreates a missing managed container with the stable
   assert.ok(dockerState.commands.some((command) => command.includes('managed-one-data:/home/node/.n8n')));
 });
 
+test('runtime orchestrator recreates a stopped managed container when Docker cannot rebind its port', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-runtime-'));
+  const service = new N8nConfigurationService({ baseDir: dir });
+  const statePath = service.getRuntimeStatePath('managed-port-conflict');
+  const dockerState: DockerState = { exists: true, running: false, commands: [] };
+  const dockerRunner = createDockerRunner(dockerState);
+  service.upsertInstance({
+    id: 'managed-port-conflict',
+    name: 'Managed Port Conflict',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5695',
+    runtimeStatePath: statePath,
+    apiKey: 'n8n_api_managed',
+    metadata: {
+      containerName: 'managed-port-conflict',
+      volumeName: 'managed-port-conflict-data',
+      databaseType: 'sqlite',
+      databasePath: '/home/node/.n8n/database.sqlite',
+    },
+  });
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify({
+    id: 'managed-port-conflict',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5695',
+    provider: 'docker',
+    runtimeStatePath: statePath,
+    containerName: 'managed-port-conflict',
+    volumeName: 'managed-port-conflict-data',
+    databaseType: 'sqlite',
+    databasePath: '/home/node/.n8n/database.sqlite',
+    apiKey: 'n8n_api_managed',
+    apiKeyScopes: DEFAULT_TEST_API_KEY_SCOPES,
+  }, null, 2));
+
+  const runtime = new N8nRuntimeOrchestrator({
+    configuration: service,
+    runner: async (command, args) => {
+      if (args[0] === 'start') {
+        dockerState.commands.push([command, ...args].join(' '));
+        throw new Error('ports are not available: exposing port TCP 0.0.0.0:5695 -> 127.0.0.1:0: /forwards/expose returned unexpected status: 500');
+      }
+      return await dockerRunner?.(command, args) ?? { stdout: '', stderr: '' };
+    },
+    waitForReady: false,
+  });
+
+  const status = await runtime.startInstance('managed-port-conflict');
+
+  assert.equal(status.ready, true);
+  assert.ok(dockerState.commands.includes('docker start managed-port-conflict'));
+  assert.ok(dockerState.commands.includes('docker rm -f managed-port-conflict'));
+  assert.ok(dockerState.commands.includes('docker volume create managed-port-conflict-data'));
+  assert.ok(dockerState.commands.some((command) => command.startsWith('docker run -d --name managed-port-conflict')));
+  assert.equal((await readFileBackedN8nInstance(statePath))?.baseUrl, 'http://127.0.0.1:5695');
+});
+
 test('runtime orchestrator reports Docker unavailable without retry loops', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-runtime-'));
   const service = new N8nConfigurationService({ baseDir: dir });
