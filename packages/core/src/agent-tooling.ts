@@ -256,8 +256,11 @@ export async function resolveWorkflowOpenLink(
 export async function ensureLocalN8nAuthBridgeRunning(input: { publicTunnel?: boolean } = {}): Promise<LocalOpenBridgeState> {
   const existing = getActiveLocalOpenBridgeState();
   if (existing) {
-    activePort = existing.port;
-    return input.publicTunnel ? ensureLocalOpenBridgePublicTunnel(existing) : existing;
+    if (await isLocalOpenBridgeHealthy(existing.port)) {
+      activePort = existing.port;
+      return input.publicTunnel ? ensureLocalOpenBridgePublicTunnel(existing) : existing;
+    }
+    await discardLocalOpenBridgeState(existing);
   }
 
   spawnLocalOpenBridgeProcess();
@@ -732,7 +735,10 @@ async function ensureLocalOpenBridgePublicTunnel(state: LocalOpenBridgeState): P
     && state.tunnelPid
     && isPidAlive(state.tunnelPid)
   ) {
-    return state;
+    if (await isPublicTunnelReady(`${state.publicUrl.replace(/\/+$/, '')}/health`)) {
+      return state;
+    }
+    await terminateProcess(state.tunnelPid);
   }
 
   if (state.tunnelNextRetryAt && Date.parse(state.tunnelNextRetryAt) > Date.now()) {
@@ -877,6 +883,22 @@ function getActiveLocalOpenBridgeState(): LocalOpenBridgeState | undefined {
   }
   activePort = state.port;
   return state;
+}
+
+async function discardLocalOpenBridgeState(state: LocalOpenBridgeState): Promise<void> {
+  if (state.tunnelPid && isPidAlive(state.tunnelPid)) {
+    await terminateProcess(state.tunnelPid);
+  }
+  clearLocalOpenBridgeState();
+}
+
+async function isLocalOpenBridgeHealthy(port: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://${LOCAL_BRIDGE_HOST}:${port}/health`);
+    return response.ok && (await response.text()).trim() === 'OK';
+  } catch {
+    return false;
+  }
 }
 
 function readLocalOpenBridgeState(): LocalOpenBridgeState | undefined {
@@ -1036,6 +1058,20 @@ function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {
   });
 }
 
+async function isPublicTunnelReady(publicUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(publicUrl, { redirect: 'manual' });
+    const body = await response.text().catch(() => '');
+    return response.status !== 530 && !isCloudflareTunnelError(body);
+  } catch {
+    return false;
+  }
+}
+
+function isCloudflareTunnelError(body: string): boolean {
+  return /error\s*1033/i.test(body) || /cloudflare tunnel error/i.test(body);
+}
+
 function formatCloudflaredLog(logFile: string): string {
   try {
     const text = fs.readFileSync(logFile, 'utf8').trim();
@@ -1046,6 +1082,9 @@ function formatCloudflaredLog(logFile: string): string {
 }
 
 async function terminateProcess(pid: number): Promise<void> {
+  if (pid === process.pid) {
+    return;
+  }
   try {
     process.kill(-pid, 'SIGTERM');
   } catch {

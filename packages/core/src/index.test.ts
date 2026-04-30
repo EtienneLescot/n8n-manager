@@ -322,6 +322,7 @@ test('runtime orchestrator reports Docker unavailable without retry loops', asyn
 test('runtime orchestrator reuses a live tunnel process for the same target', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-runtime-'));
   const previousHome = process.env.N8N_MANAGER_HOME;
+  const previousFetch = globalThis.fetch;
   process.env.N8N_MANAGER_HOME = dir;
   const service = new N8nConfigurationService({ baseDir: dir });
   const statePath = service.getRuntimeStatePath('tunnel-managed');
@@ -365,9 +366,20 @@ test('runtime orchestrator reuses a live tunnel process for the same target', as
   }, null, 2));
 
   try {
+    globalThis.fetch = (async (input) => {
+      const url = input.toString();
+      if (url === 'http://127.0.0.1:3791/health') {
+        return new Response('OK', { status: 200 });
+      }
+      if (url === 'https://auth-bridge.trycloudflare.com/health') {
+        return new Response('OK', { status: 200 });
+      }
+      return new Response('<html>n8n</html>', { status: 200 });
+    }) as typeof fetch;
     const runtime = new N8nRuntimeOrchestrator({
       configuration: service,
       runner: createDockerRunner(dockerState),
+      fetch: (async () => new Response('<html>n8n</html>', { status: 200 })) as typeof fetch,
       waitForReady: false,
     });
 
@@ -384,6 +396,7 @@ test('runtime orchestrator reuses a live tunnel process for the same target', as
     } else {
       process.env.N8N_MANAGER_HOME = previousHome;
     }
+    globalThis.fetch = previousFetch;
   }
 });
 

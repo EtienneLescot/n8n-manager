@@ -1123,11 +1123,14 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       && existingState.tunnelTargetUrl === targetUrl
       && isPidAlive(existingState.tunnelPid)
     ) {
-      return {
-        publicUrl: existingState.tunnelPublicUrl,
-        targetUrl,
-        pid: existingState.tunnelPid,
-      };
+      if (await isPublicTunnelReady(existingState.tunnelPublicUrl, this.fetcher)) {
+        return {
+          publicUrl: existingState.tunnelPublicUrl,
+          targetUrl,
+          pid: existingState.tunnelPid,
+        };
+      }
+      await this.stopTunnel(existingState, 'lifecycle.ensureTunnel.replace-unhealthy');
     }
 
     if (existingState?.tunnelPid && isPidAlive(existingState.tunnelPid)) {
@@ -2077,6 +2080,9 @@ function isPidAlive(pid: number): boolean {
 }
 
 async function terminateProcess(pid: number, reason: string): Promise<void> {
+  if (pid === process.pid) {
+    return;
+  }
   recordTunnelTermination(pid, reason, 'SIGTERM');
   try {
     process.kill(-pid, 'SIGTERM');
@@ -2244,6 +2250,23 @@ function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {
       }
     }, 500);
   });
+}
+
+async function isPublicTunnelReady(publicUrl: string, fetcher: typeof fetch): Promise<boolean> {
+  try {
+    const response = await fetcher(publicUrl, { redirect: 'manual' });
+    if (response.status === 530) {
+      return false;
+    }
+    const body = await safeReadText(response);
+    return !isCloudflareTunnelError(body);
+  } catch {
+    return false;
+  }
+}
+
+function isCloudflareTunnelError(body: string): boolean {
+  return /error\s*1033/i.test(body) || /cloudflare tunnel error/i.test(body);
 }
 
 function formatCloudflaredLog(logFile: string): string {
