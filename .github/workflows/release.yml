@@ -26,9 +26,12 @@ jobs:
           fetch-depth: 0
 
       - name: Run release-please
-        uses: googleapis/release-please-action@v4
+        uses: google-github-actions/release-please-action@v4
         with:
           release-type: node
+          package-name: n8n-manager
+          monorepo-tags: true
+          prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
   publish-stable:
