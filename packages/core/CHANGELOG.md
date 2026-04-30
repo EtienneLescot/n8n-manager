@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.2.0...@n8n-as-code/n8n-manager-core-v0.3.0) (2026-04-30)
+
+
+### Features
+
+* **core:** enhance n8n instance management and tunnel error reporting ([fcbb3ab](https://github.com/EtienneLescot/n8n-manager/commit/fcbb3ab3c717bbd3bab8006440e7f69b3810eb20))
+* **core:** expose auth bridge open URL and warning reporting ([ace5857](https://github.com/EtienneLescot/n8n-manager/commit/ace58571100e823c14a85668bd8b74db24d77519))
+
+
+### Bug Fixes
+
+* add repository metadata for trusted publishing ([18ea97d](https://github.com/EtienneLescot/n8n-manager/commit/18ea97d53bce9a50655d4a778d1121f7bb63c0d2))
+
 ## [0.2.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.1.0...@n8n-as-code/n8n-manager-core-v0.2.0) (2026-04-30)
 
 
