@@ -3,9 +3,6 @@ name: Release
 on:
   push:
     branches: [main, next]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, closed]
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -66,7 +63,7 @@ jobs:
 
   publish-stable:
     name: Publish Stable
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && github.actor == 'github-actions[bot]'
+    if: github.ref == 'refs/heads/main'
     needs: release-please
     runs-on: ubuntu-latest
     environment: prod
