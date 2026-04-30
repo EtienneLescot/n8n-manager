@@ -3,7 +3,7 @@
     ".": {
       "release-type": "node",
       "changelog-path": "CHANGELOG.md",
-      "versioning": "default"
+      "skip-github-release": true
     }
   }
 }
