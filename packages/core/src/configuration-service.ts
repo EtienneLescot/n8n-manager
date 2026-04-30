@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 export type N8nConfigurationInstanceMode = 'managed-local-docker' | 'managed-local-direct' | 'existing' | 'generation-only';
+export type N8nDesiredRuntimeState = 'running' | 'stopped';
 
 export interface N8nConfigurationLifecycleInstanceRef {
   id: string;
@@ -14,6 +15,8 @@ export interface N8nConfigurationLifecycleInstanceRef {
   apiKey?: string;
   apiKeyRef?: string;
   apiKeyAvailable?: boolean;
+  publicUrlEnabled?: boolean;
+  desiredState?: N8nDesiredRuntimeState;
   containerName?: string;
   volumeName?: string;
   image?: string;
@@ -55,6 +58,8 @@ export interface GlobalN8nInstance {
   runtimeStatePath?: string;
   apiKeyRef?: string;
   apiKeyAvailable?: boolean;
+  publicUrlEnabled?: boolean;
+  desiredState?: N8nDesiredRuntimeState;
   tunnelPublicUrl?: string;
   tunnelTargetUrl?: string;
   tunnelPid?: number;
@@ -117,6 +122,8 @@ export interface UpsertGlobalN8nInstanceInput {
   host?: string;
   apiKey?: string;
   provider?: N8nInstanceProvider;
+  publicUrlEnabled?: boolean;
+  desiredState?: N8nDesiredRuntimeState;
   instanceIdentifier?: string;
   verification?: N8nInstanceVerification;
   defaultProject?: N8nProjectRef;
@@ -199,21 +206,29 @@ export class N8nConfigurationService {
     const baseUrl = cleanString(input.baseUrl ?? input.host ?? existing?.baseUrl);
     const id = cleanString(input.id ?? existing?.id) ?? createInstanceId(baseUrl ?? input.name);
 
+    const hasTunnelPublicUrlInput = Object.prototype.hasOwnProperty.call(input, 'tunnelPublicUrl');
+    const hasTunnelTargetUrlInput = Object.prototype.hasOwnProperty.call(input, 'tunnelTargetUrl');
+    const hasTunnelPidInput = Object.prototype.hasOwnProperty.call(input, 'tunnelPid');
+
+    const mode = input.mode ?? existing?.mode ?? 'existing';
+
     const instance: GlobalN8nInstance = {
       id,
       name: cleanString(input.name ?? existing?.name) ?? createDefaultInstanceName(baseUrl),
-      mode: input.mode ?? existing?.mode ?? 'existing',
+      mode,
       baseUrl,
-      provider: input.provider ?? existing?.provider ?? providerForMode(input.mode ?? existing?.mode ?? 'existing'),
+      provider: input.provider ?? existing?.provider ?? providerForMode(mode),
       instanceIdentifier: cleanString(input.instanceIdentifier ?? existing?.instanceIdentifier),
       verification: input.verification ?? existing?.verification,
       defaultProject: input.defaultProject ?? existing?.defaultProject,
       runtimeStatePath: cleanString(input.runtimeStatePath ?? existing?.runtimeStatePath),
       apiKeyRef: input.apiKey || existing?.apiKeyAvailable ? `n8n-manager:instance:${id}` : existing?.apiKeyRef,
       apiKeyAvailable: Boolean(input.apiKey) || Boolean(existing?.apiKeyAvailable),
-      tunnelPublicUrl: cleanString(input.tunnelPublicUrl ?? existing?.tunnelPublicUrl),
-      tunnelTargetUrl: cleanString(input.tunnelTargetUrl ?? existing?.tunnelTargetUrl),
-      tunnelPid: typeof input.tunnelPid === 'number' ? input.tunnelPid : existing?.tunnelPid,
+      publicUrlEnabled: input.publicUrlEnabled ?? existing?.publicUrlEnabled ?? false,
+      desiredState: input.desiredState ?? existing?.desiredState ?? (mode === 'managed-local-docker' ? 'running' : undefined),
+      tunnelPublicUrl: cleanString(hasTunnelPublicUrlInput ? input.tunnelPublicUrl : existing?.tunnelPublicUrl),
+      tunnelTargetUrl: cleanString(hasTunnelTargetUrlInput ? input.tunnelTargetUrl : existing?.tunnelTargetUrl),
+      tunnelPid: hasTunnelPidInput ? (typeof input.tunnelPid === 'number' ? input.tunnelPid : undefined) : existing?.tunnelPid,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       metadata: input.metadata ?? existing?.metadata,
@@ -248,6 +263,8 @@ export class N8nConfigurationService {
       runtimeStatePath: instance.runtimeStatePath ?? (instance.mode === 'managed-local-docker' ? this.getRuntimeStatePath(instance.id) : undefined),
       apiKey: options.apiKey ?? instance.apiKey,
       apiKeyRef: instance.apiKeyRef,
+      publicUrlEnabled: instance.publicUrlEnabled,
+      desiredState: instance.desiredState,
       tunnelPublicUrl: instance.tunnelPublicUrl,
       tunnelTargetUrl: instance.tunnelTargetUrl,
       tunnelPid: instance.tunnelPid,
@@ -524,6 +541,8 @@ function sanitizeInstance(source: GlobalN8nInstance): GlobalN8nInstance {
     runtimeStatePath: cleanString(source.runtimeStatePath),
     apiKeyRef: cleanString(source.apiKeyRef),
     apiKeyAvailable: Boolean(source.apiKeyAvailable),
+    publicUrlEnabled: typeof source.publicUrlEnabled === 'boolean' ? source.publicUrlEnabled : undefined,
+    desiredState: source.desiredState === 'stopped' ? 'stopped' : source.mode === 'managed-local-docker' ? 'running' : undefined,
     tunnelPublicUrl: cleanString(source.tunnelPublicUrl ?? readMetadataString(source.metadata, 'tunnelPublicUrl')),
     tunnelTargetUrl: cleanString(source.tunnelTargetUrl ?? readMetadataString(source.metadata, 'tunnelTargetUrl')),
     tunnelPid: typeof source.tunnelPid === 'number'
@@ -566,7 +585,7 @@ function resolveWorkspacePath(workspaceRoot: string, targetPath: string): string
 }
 
 function resolveInstanceHost(instance: GlobalN8nInstance): string | undefined {
-  return cleanString(instance.baseUrl) ?? cleanString(instance.tunnelPublicUrl);
+  return cleanString(instance.tunnelPublicUrl) ?? cleanString(instance.baseUrl);
 }
 
 function readMetadataString(metadata: unknown, key: string): string | undefined {

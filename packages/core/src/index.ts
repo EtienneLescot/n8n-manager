@@ -43,6 +43,9 @@ export interface N8nInstanceRef {
   apiKey?: string;
   apiKeyScopes?: string[];
   apiKeyAvailable?: boolean;
+  publicUrlEnabled?: boolean;
+  desiredState?: 'running' | 'stopped';
+  warnings?: string[];
   ownerEmail?: string;
   ownerPassword?: string;
   ownerFirstName?: string;
@@ -278,7 +281,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
 
   async setup(input: { mode: N8nInstanceMode; baseUrl?: string; apiKeyRef?: string; tunnel?: boolean; bootstrapOwner?: boolean }): Promise<N8nInstanceRef> {
     const existingState = await this.readInstance();
-    const shouldTunnel = input.tunnel ?? this.tunnelDefault;
+    const shouldTunnel = input.tunnel ?? existingState?.publicUrlEnabled ?? this.tunnelDefault;
     const shouldBootstrapOwner = input.bootstrapOwner ?? this.bootstrapOwnerDefault;
 
     if (input.mode === 'managed-local-docker') {
@@ -292,13 +295,17 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     const ownerBootstrap = input.mode === 'managed-local-docker' && shouldBootstrapOwner
       ? await this.bootstrapManagedOwner(baseUrl)
       : undefined;
-    const tunnel = input.mode === 'managed-local-docker'
-      ? shouldTunnel
-        ? await this.ensureTunnel(baseUrl, 'ensure', existingState)
-        : undefined
-      : existingState?.tunnelPublicUrl && existingState.tunnelPid
-          ? { publicUrl: existingState.tunnelPublicUrl, targetUrl: existingState.tunnelTargetUrl, pid: existingState.tunnelPid }
-          : undefined;
+    const warnings: string[] = [];
+    let tunnel: { publicUrl: string; targetUrl: string; pid: number } | undefined;
+    if (input.mode === 'managed-local-docker' && shouldTunnel) {
+      try {
+        tunnel = await this.ensureTunnel(baseUrl, 'ensure', existingState);
+      } catch (error) {
+        warnings.push(`Public URL could not be created: ${formatCommandError(error)}`);
+      }
+    } else if (existingState?.tunnelPublicUrl && existingState.tunnelPid) {
+      tunnel = { publicUrl: existingState.tunnelPublicUrl, targetUrl: existingState.tunnelTargetUrl ?? existingState.baseUrl ?? existingState.tunnelPublicUrl, pid: existingState.tunnelPid };
+    }
     const tunnelAlreadyApplied = existingState?.tunnelPublicUrl === tunnel?.publicUrl
       && existingState?.tunnelTargetUrl === baseUrl
       && existingState?.tunnelPid === tunnel?.pid;
@@ -331,9 +338,12 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       ownerPassword: ownerBootstrap?.ownerPassword ?? existingState?.ownerPassword,
       ownerFirstName: ownerBootstrap?.ownerFirstName ?? existingState?.ownerFirstName,
       ownerLastName: ownerBootstrap?.ownerLastName ?? existingState?.ownerLastName,
+      publicUrlEnabled: shouldTunnel,
+      desiredState: 'running',
       tunnelPublicUrl: tunnel?.publicUrl,
-      tunnelTargetUrl: tunnel?.targetUrl ?? baseUrl,
+      tunnelTargetUrl: shouldTunnel ? (tunnel?.targetUrl ?? baseUrl) : undefined,
       tunnelPid: tunnel?.pid,
+      warnings: warnings.length ? warnings : undefined,
     };
     await this.writeInstance(instance);
     return toPublicInstance(instance);
@@ -429,6 +439,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     const tunnel = await this.ensureTunnel(targetUrl, input.action ?? 'ensure', instance);
     const next = {
       ...instance,
+      publicUrlEnabled: true,
       tunnelPublicUrl: tunnel?.publicUrl,
       tunnelTargetUrl: tunnel?.targetUrl ?? targetUrl,
       tunnelPid: tunnel?.pid,
@@ -454,7 +465,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     };
   }
 
-  async stopPublicTunnel(): Promise<N8nTunnelSnapshot> {
+  async stopPublicTunnel(input: { disable?: boolean } = {}): Promise<N8nTunnelSnapshot> {
     const instance = await this.readInstance();
     if (!instance) {
       return { enabled: false, running: false };
@@ -462,17 +473,21 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     await this.stopTunnel(instance);
     await this.writeInstance({
       ...instance,
+      publicUrlEnabled: input.disable === false ? instance.publicUrlEnabled : false,
       tunnelPublicUrl: undefined,
-      tunnelTargetUrl: undefined,
+      tunnelTargetUrl: input.disable === false ? (instance.tunnelTargetUrl ?? instance.baseUrl) : undefined,
       tunnelPid: undefined,
     });
-    return { enabled: false, running: false };
+    return { enabled: input.disable === false && Boolean(instance.publicUrlEnabled), running: false };
   }
 
   async getPublicTunnelStatus(): Promise<N8nTunnelSnapshot> {
     const instance = await this.readInstance();
-    if (!instance?.tunnelPublicUrl) {
+    if (!instance?.publicUrlEnabled && !instance?.tunnelPublicUrl) {
       return { enabled: false, running: false };
+    }
+    if (!instance.tunnelPublicUrl) {
+      return { enabled: true, running: false, targetUrl: instance.tunnelTargetUrl ?? instance.baseUrl };
     }
     const running = Boolean(instance.tunnelPid && isPidAlive(instance.tunnelPid));
     if (!running) {
@@ -952,6 +967,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       ownerPassword: credentials.password,
       ownerFirstName: credentials.firstName,
       ownerLastName: credentials.lastName,
+      publicUrlEnabled: existing?.publicUrlEnabled,
       tunnelPublicUrl: existing?.tunnelPublicUrl,
       tunnelTargetUrl: existing?.tunnelTargetUrl,
       tunnelPid: existing?.tunnelPid,
@@ -999,16 +1015,15 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     child.unref();
     try {
       const publicUrl = await waitForTunnelPublicUrl(child.pid, logFile);
-      return { publicUrl, targetUrl, pid: child.pid };
-    } catch (error) {
-      await terminateProcess(child.pid);
-      throw error;
-    } finally {
       try {
         fssync.unlinkSync(logFile);
       } catch {
         // ignore
       }
+      return { publicUrl, targetUrl, pid: child.pid };
+    } catch (error) {
+      await terminateProcess(child.pid);
+      throw error;
     }
   }
 
@@ -1040,7 +1055,13 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     try {
       const content = await fs.readFile(this.statePath, 'utf-8');
       const parsed = JSON.parse(content) as N8nInstanceRef;
-      return parsed.id && parsed.mode ? parsed : undefined;
+      return parsed.id && parsed.mode
+        ? {
+          ...parsed,
+          publicUrlEnabled: parsed.publicUrlEnabled ?? false,
+          desiredState: parsed.desiredState ?? (parsed.mode === 'managed-local-docker' ? 'running' : undefined),
+        }
+        : undefined;
     } catch {
       return undefined;
     }
@@ -1058,7 +1079,13 @@ export async function readFileBackedN8nInstance(
   try {
     const content = await fs.readFile(resolveFileBackedN8nStatePath(statePath), 'utf-8');
     const parsed = JSON.parse(content) as N8nInstanceRef;
-    return parsed.id && parsed.mode ? parsed : undefined;
+    return parsed.id && parsed.mode
+      ? {
+        ...parsed,
+        publicUrlEnabled: parsed.publicUrlEnabled ?? false,
+        desiredState: parsed.desiredState ?? (parsed.mode === 'managed-local-docker' ? 'running' : undefined),
+      }
+      : undefined;
   } catch {
     return undefined;
   }
@@ -1203,12 +1230,12 @@ export class N8nRuntimeOrchestrator {
     });
     const diagnostics: PreparedEffectiveN8nContext['diagnostics'] = [];
 
-    if (input.autoStart !== false && context.instance.mode === 'managed-local-docker') {
+    if (input.autoStart !== false && context.instance.mode === 'managed-local-docker' && context.instance.desiredState !== 'stopped') {
       try {
-        const runtime = await this.setupInstance(context.instance.id, {
-          tunnel: Boolean(context.instance.tunnelPublicUrl || context.instance.tunnelTargetUrl),
-          bootstrapOwner: true,
-        });
+        let runtime = await this.getRuntimeStatus(context.instance.id);
+        if (!runtime.ready) {
+          runtime = await this.startInstance(context.instance.id, { ensurePublicUrl: false });
+        }
         diagnostics.push(...diagnosticsFromRuntime(runtime));
         context = this.configuration.resolveEffectiveContext({
           workspaceRoot: input.workspaceRoot,
@@ -1268,13 +1295,7 @@ export class N8nRuntimeOrchestrator {
 
     const lifecycle = await this.lifecycleForInstance(instance);
     const health = await lifecycle.status();
-    let tunnel = await lifecycle.getPublicTunnelStatus();
-    if (tunnel.enabled && !tunnel.running) {
-      await stopLocalN8nAuthBridgePublicTunnel();
-      await lifecycle.stopPublicTunnel();
-      this.configuration.clearInstanceTunnel(instance.id);
-      tunnel = { enabled: false, running: false };
-    }
+    const tunnel = await lifecycle.getPublicTunnelStatus();
     const blocked = blockedFromHealth(health, instance);
     return {
       ...health,
@@ -1295,23 +1316,28 @@ export class N8nRuntimeOrchestrator {
     const lifecycle = await this.lifecycleForInstance(instance);
     const snapshot = await lifecycle.setup({
       mode: 'managed-local-docker',
-      tunnel: input.tunnel ?? Boolean(instance.tunnelPublicUrl || instance.tunnelTargetUrl),
+      tunnel: input.tunnel ?? Boolean(instance.publicUrlEnabled),
       bootstrapOwner: input.bootstrapOwner ?? true,
     });
     await this.syncLifecycleSnapshot(instance, snapshot);
-    await this.ensureAuthBridgeTunnelIfNeeded(input.tunnel ?? Boolean(instance.tunnelPublicUrl || instance.tunnelTargetUrl));
+    await this.ensureAuthBridgeTunnelIfNeeded(Boolean(snapshot.tunnelPublicUrl));
     return this.getRuntimeStatus(instance.id);
   }
 
-  async startInstance(instanceId: string): Promise<N8nRuntimeStatusSnapshot> {
+  async startInstance(instanceId: string, input: { ensurePublicUrl?: boolean } = {}): Promise<N8nRuntimeStatusSnapshot> {
     const instance = this.requireInstance(instanceId);
     if (instance.mode !== 'managed-local-docker') {
       return this.getRuntimeStatus(instance.id);
     }
+    this.configuration.upsertInstance({ id: instance.id, desiredState: 'running' }, { setActive: false });
     const lifecycle = await this.lifecycleForInstance(instance);
     const privateState = await readFileBackedN8nInstance(instance.runtimeStatePath);
+    const ensurePublicUrl = input.ensurePublicUrl ?? true;
     if (!privateState) {
-      return this.setupInstance(instance.id, { tunnel: Boolean(instance.tunnelPublicUrl || instance.tunnelTargetUrl), bootstrapOwner: true });
+      return this.setupInstance(instance.id, { tunnel: ensurePublicUrl && Boolean(instance.publicUrlEnabled), bootstrapOwner: true });
+    }
+    if (ensurePublicUrl && instance.publicUrlEnabled) {
+      return this.setupInstance(instance.id, { tunnel: true, bootstrapOwner: true });
     }
     await lifecycle.start();
     await this.syncPrivateRuntimeState(instance);
@@ -1323,22 +1349,24 @@ export class N8nRuntimeOrchestrator {
     if (instance.mode !== 'managed-local-docker') {
       return this.getRuntimeStatus(instance.id);
     }
+    this.configuration.upsertInstance({ id: instance.id, desiredState: 'stopped' }, { setActive: false });
     const lifecycle = await this.lifecycleForInstance(instance);
-    await stopLocalN8nAuthBridgePublicTunnel();
-    await lifecycle.stopPublicTunnel();
-    this.configuration.clearInstanceTunnel(instance.id);
+    await this.cleanupTunnelWorkers(instance, { disablePublicUrl: false });
     await lifecycle.stop();
-    await this.syncPrivateRuntimeState(instance);
+    this.configuration.upsertInstance({ id: instance.id, desiredState: 'stopped' }, { setActive: false });
     return this.getRuntimeStatus(instance.id);
   }
 
   async restartInstance(instanceId: string): Promise<N8nRuntimeStatusSnapshot> {
     const instance = this.requireInstance(instanceId);
-    const hadTunnel = Boolean(instance.tunnelPublicUrl || instance.tunnelTargetUrl);
+    const hadTunnel = Boolean(instance.publicUrlEnabled);
     if (instance.mode !== 'managed-local-docker') {
       return this.getRuntimeStatus(instance.id);
     }
-    await this.stopInstance(instance.id);
+    this.configuration.upsertInstance({ id: instance.id, desiredState: 'running' }, { setActive: false });
+    const lifecycle = await this.lifecycleForInstance(instance);
+    await this.cleanupTunnelWorkers(instance, { disablePublicUrl: false });
+    await lifecycle.stop();
     return this.setupInstance(instance.id, { tunnel: hadTunnel, bootstrapOwner: true });
   }
 
@@ -1347,9 +1375,9 @@ export class N8nRuntimeOrchestrator {
     if (instance.mode !== 'managed-local-docker') {
       return this.getRuntimeStatus(instance.id);
     }
+    await this.cleanupTunnelWorkers(instance, { disablePublicUrl: true });
     const lifecycle = await this.lifecycleForInstance(instance);
     const result = await lifecycle.delete(input);
-    await stopLocalN8nAuthBridgePublicTunnel();
     this.configuration.clearInstanceTunnel(instance.id);
     return {
       ...result,
@@ -1369,7 +1397,7 @@ export class N8nRuntimeOrchestrator {
     const lifecycle = await this.lifecycleForInstance(instance);
     const privateState = await readFileBackedN8nInstance(instance.runtimeStatePath);
     if (!privateState) {
-      await this.setupInstance(instance.id, { tunnel: false, bootstrapOwner: true });
+      await this.setupInstance(instance.id, { tunnel: true, bootstrapOwner: true });
     } else {
       await lifecycle.start();
     }
@@ -1384,16 +1412,17 @@ export class N8nRuntimeOrchestrator {
     if (instance.mode !== 'managed-local-docker') {
       throw new Error(`Instance "${instance.name}" is not managed by n8n-manager; manage its tunnel outside n8n-manager.`);
     }
-    const lifecycle = await this.lifecycleForInstance(instance);
-    await stopLocalN8nAuthBridgePublicTunnel();
-    await lifecycle.stopPublicTunnel();
-    this.configuration.clearInstanceTunnel(instance.id);
-    await this.syncPrivateRuntimeState(instance);
+    await this.cleanupTunnelWorkers(instance, { disablePublicUrl: true });
     return this.getRuntimeStatus(instance.id);
   }
 
   async cleanupInstanceProcesses(instanceId: string): Promise<N8nRuntimeStatusSnapshot> {
-    return this.stopTunnel(instanceId);
+    const instance = this.requireInstance(instanceId);
+    if (instance.mode !== 'managed-local-docker') {
+      return this.getRuntimeStatus(instance.id);
+    }
+    await this.cleanupTunnelWorkers(instance, { disablePublicUrl: false });
+    return this.getRuntimeStatus(instance.id);
   }
 
   private async ensureAuthBridgeTunnelIfNeeded(enabled: boolean): Promise<void> {
@@ -1401,6 +1430,26 @@ export class N8nRuntimeOrchestrator {
       return;
     }
     await ensureLocalN8nAuthBridgeRunning({ publicTunnel: true });
+  }
+
+  private async cleanupTunnelWorkers(instance: GlobalN8nInstance, input: { disablePublicUrl: boolean }): Promise<void> {
+    await stopLocalN8nAuthBridgePublicTunnel();
+    const lifecycle = await this.lifecycleForInstance(instance);
+    await lifecycle.stopPublicTunnel({ disable: input.disablePublicUrl });
+
+    if (input.disablePublicUrl) {
+      this.configuration.upsertInstance({
+        id: instance.id,
+        publicUrlEnabled: false,
+        tunnelPublicUrl: undefined,
+        tunnelTargetUrl: undefined,
+        tunnelPid: undefined,
+      }, { setActive: false });
+    } else {
+      this.configuration.clearInstanceTunnel(instance.id);
+    }
+
+    await this.syncPrivateRuntimeState(this.configuration.getInstance(instance.id) ?? instance);
   }
 
   private requireInstance(instanceId: string): GlobalN8nInstance {
@@ -1422,12 +1471,15 @@ export class N8nRuntimeOrchestrator {
 
   private async syncLifecycleSnapshot(existing: GlobalN8nInstance, snapshot: N8nInstanceRef): Promise<void> {
     const privateState = await readFileBackedN8nInstance(snapshot.runtimeStatePath);
+    const current = this.configuration.getInstance(existing.id) ?? existing;
     this.configuration.upsertInstanceFromLifecycle({
       ...snapshot,
       ...(privateState ?? {}),
+      publicUrlEnabled: current.publicUrlEnabled ?? snapshot.publicUrlEnabled ?? privateState?.publicUrlEnabled,
+      desiredState: current.desiredState ?? snapshot.desiredState ?? privateState?.desiredState,
       runtimeStatePath: snapshot.runtimeStatePath ?? privateState?.runtimeStatePath ?? existing.runtimeStatePath,
     }, {
-      name: existing.name,
+      name: current.name,
       apiKey: privateState?.apiKey,
       setActive: false,
     });
@@ -1452,6 +1504,8 @@ function toRuntimePublicInstance(instance: GlobalN8nInstance, apiKey?: string): 
     runtimeStatePath: instance.runtimeStatePath,
     apiKeyRef: instance.apiKeyRef,
     provider: instance.provider,
+    publicUrlEnabled: instance.publicUrlEnabled,
+    desiredState: instance.desiredState,
     containerName: readMetadataString(metadata, 'containerName'),
     volumeName: readMetadataString(metadata, 'volumeName'),
     image: readMetadataString(metadata, 'image'),
@@ -1465,7 +1519,7 @@ function toRuntimePublicInstance(instance: GlobalN8nInstance, apiKey?: string): 
 }
 
 function tunnelSnapshotFromInstance(instance: GlobalN8nInstance): N8nTunnelSnapshot {
-  const enabled = Boolean(instance.tunnelPublicUrl || instance.tunnelTargetUrl || instance.tunnelPid);
+  const enabled = Boolean(instance.publicUrlEnabled || instance.tunnelPublicUrl || instance.tunnelPid);
   const running = Boolean(instance.tunnelPid && isPidAlive(instance.tunnelPid));
   return stripUndefinedObject({
     enabled,
@@ -1507,6 +1561,9 @@ function blockedFromHealth(
   }
 
   if (health.status === 'stopped') {
+    if (instance.desiredState === 'stopped') {
+      return undefined;
+    }
     return {
       code: 'runtime-unhealthy',
       message: `Managed n8n container for "${instance.name}" is stopped.`,
@@ -1911,14 +1968,23 @@ function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {
 
       if (!isPidAlive(pid)) {
         clearInterval(interval);
-        reject(new Error('cloudflared exited before emitting a public URL.'));
+        reject(new Error(`cloudflared exited before emitting a public URL.${formatCloudflaredLog(logFile)}`));
         return;
       }
 
       if (Date.now() - startedAt > 30_000) {
         clearInterval(interval);
-        reject(new Error('cloudflared did not emit a public URL within 30s.'));
+        reject(new Error(`cloudflared did not emit a public URL within 30s.${formatCloudflaredLog(logFile)}`));
       }
     }, 500);
   });
+}
+
+function formatCloudflaredLog(logFile: string): string {
+  try {
+    const text = fssync.readFileSync(logFile, 'utf8').trim();
+    return text ? `\n\ncloudflared log:\n${text.slice(-2000)}` : '';
+  } catch {
+    return '';
+  }
 }

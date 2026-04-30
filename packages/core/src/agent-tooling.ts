@@ -737,21 +737,20 @@ async function startCloudflaredTunnel(targetUrl: string): Promise<{ publicUrl: s
     throw new Error('cloudflared failed to start for n8n auth bridge.');
   }
 
-  child.unref();
-  try {
-    const publicUrl = await waitForTunnelPublicUrl(child.pid, logFile);
-    return { publicUrl, pid: child.pid };
-  } catch (error) {
-    await terminateProcess(child.pid);
-    throw error;
-  } finally {
+    child.unref();
     try {
-      fs.unlinkSync(logFile);
-    } catch {
-      // ignore
+      const publicUrl = await waitForTunnelPublicUrl(child.pid, logFile);
+      try {
+        fs.unlinkSync(logFile);
+      } catch {
+        // ignore
+      }
+      return { publicUrl, pid: child.pid };
+    } catch (error) {
+      await terminateProcess(child.pid);
+      throw error;
     }
   }
-}
 
 function buildLocalWorkflowOpenBridgeUrl(target: string, publicBridgeUrl?: string): string {
   const token = registerWorkflowOpenTarget(target);
@@ -978,16 +977,25 @@ function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {
 
       if (!isPidAlive(pid)) {
         clearInterval(interval);
-        reject(new Error('cloudflared exited before emitting a public URL.'));
+        reject(new Error(`cloudflared exited before emitting a public URL.${formatCloudflaredLog(logFile)}`));
         return;
       }
 
       if (Date.now() - startedAt > LOCAL_BRIDGE_TUNNEL_TIMEOUT_MS) {
         clearInterval(interval);
-        reject(new Error('cloudflared did not emit a public URL within 30s.'));
+        reject(new Error(`cloudflared did not emit a public URL within 30s.${formatCloudflaredLog(logFile)}`));
       }
     }, 500);
   });
+}
+
+function formatCloudflaredLog(logFile: string): string {
+  try {
+    const text = fs.readFileSync(logFile, 'utf8').trim();
+    return text ? `\n\ncloudflared log:\n${text.slice(-2000)}` : '';
+  } catch {
+    return '';
+  }
 }
 
 async function terminateProcess(pid: number): Promise<void> {
