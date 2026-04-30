@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.3.0...@n8n-as-code/n8n-manager-v0.3.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* **cli:** update local dependency versions to semver ([8dc1536](https://github.com/EtienneLescot/n8n-manager/commit/8dc15361036fe1475d3657aec0e7fa6f69dcede0))
+
 ## [0.3.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.2.1...@n8n-as-code/n8n-manager-v0.3.0) (2026-04-30)
 
 
