@@ -20,6 +20,7 @@ const LOCAL_BRIDGE_START_TIMEOUT_MS = 8_000;
 const LOCAL_BRIDGE_TUNNEL_TIMEOUT_MS = 30_000;
 const CLOUDFLARE_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
 const WORKFLOW_EMBED_TYPE = 'workflow-embed';
+const TUNNEL_RETRY_COOLDOWN_MS = 10 * 60 * 1000;
 const execFileAsync = promisify(execFile);
 
 let serverPromise: Promise<void> | undefined;
@@ -67,6 +68,9 @@ export interface LocalOpenBridgeState {
   publicUrl?: string;
   tunnelTargetUrl?: string;
   tunnelPid?: number;
+  tunnelLastAttemptAt?: string;
+  tunnelLastError?: string;
+  tunnelNextRetryAt?: string;
 }
 
 export interface LocalOpenBridgeStatus {
@@ -78,6 +82,9 @@ export interface LocalOpenBridgeStatus {
   tunnelTargetUrl?: string;
   tunnelPid?: number;
   tunnelRunning?: boolean;
+  tunnelLastAttemptAt?: string;
+  tunnelLastError?: string;
+  tunnelNextRetryAt?: string;
   startedAt?: string;
   statePath: string;
 }
@@ -224,7 +231,8 @@ export async function resolveWorkflowOpenLink(
     return { openUrl: workflowUrl, targetUrl: workflowUrl, via: 'direct' };
   }
 
-  const publicTargetUrl = instance.tunnelPublicUrl
+  const hasRunningPublicTunnel = Boolean(instance.tunnelPublicUrl && instance.tunnelPid && isPidAlive(instance.tunnelPid));
+  const publicTargetUrl = hasRunningPublicTunnel && instance.tunnelPublicUrl
     ? replaceUrlOrigin(target, instance.tunnelPublicUrl)
     : target.toString();
 
@@ -237,7 +245,7 @@ export async function resolveWorkflowOpenLink(
     };
   }
 
-  const bridge = await ensureLocalN8nAuthBridgeRunning({ publicTunnel: Boolean(instance.tunnelPublicUrl) });
+  const bridge = await ensureLocalN8nAuthBridgeRunning({ publicTunnel: hasRunningPublicTunnel });
   return {
     openUrl: buildLocalWorkflowOpenBridgeUrl(publicTargetUrl, bridge.publicUrl),
     targetUrl: publicTargetUrl,
@@ -269,15 +277,18 @@ export function getLocalN8nAuthBridgeStatus(): LocalOpenBridgeStatus {
     tunnelTargetUrl: tunnelRunning ? state?.tunnelTargetUrl : undefined,
     tunnelPid: tunnelRunning ? state?.tunnelPid : undefined,
     tunnelRunning,
+    tunnelLastAttemptAt: state?.tunnelLastAttemptAt,
+    tunnelLastError: tunnelRunning ? undefined : state?.tunnelLastError,
+    tunnelNextRetryAt: tunnelRunning ? undefined : state?.tunnelNextRetryAt,
     startedAt: state?.startedAt,
     statePath: getLocalOpenBridgeStatePath(),
   };
 }
 
-export async function getManagedN8nAuthBridgeOpenUrl(instance: GlobalN8nInstance): Promise<string | undefined> {
+export async function getManagedN8nAuthBridgeOpenUrl(instance: GlobalN8nInstance, targetUrlOverride?: string): Promise<string | undefined> {
   const status = getLocalN8nAuthBridgeStatus();
   const bridgePublicUrl = status.publicUrl;
-  const targetUrl = instance.tunnelPublicUrl ?? instance.baseUrl;
+  const targetUrl = targetUrlOverride ?? instance.tunnelPublicUrl ?? instance.baseUrl;
   if (!bridgePublicUrl || !targetUrl) {
     return undefined;
   }
@@ -724,16 +735,38 @@ async function ensureLocalOpenBridgePublicTunnel(state: LocalOpenBridgeState): P
     return state;
   }
 
+  if (state.tunnelNextRetryAt && Date.parse(state.tunnelNextRetryAt) > Date.now()) {
+    throw new Error(`Cloudflare tunnel creation is temporarily paused until ${state.tunnelNextRetryAt}.${state.tunnelLastError ? ` Last error: ${state.tunnelLastError}` : ''}`);
+  }
+
   if (state.tunnelPid && isPidAlive(state.tunnelPid)) {
     await terminateProcess(state.tunnelPid);
   }
 
-  const publicTunnel = await startCloudflaredTunnel(targetUrl);
+  const tunnelLastAttemptAt = new Date().toISOString();
+  let publicTunnel: { publicUrl: string; pid: number };
+  try {
+    publicTunnel = await startCloudflaredTunnel(targetUrl);
+  } catch (error) {
+    const nextState: LocalOpenBridgeState = {
+      port: state.port,
+      pid: state.pid,
+      startedAt: state.startedAt,
+      tunnelLastAttemptAt,
+      tunnelLastError: error instanceof Error ? (error.stack ?? error.message) : String(error),
+      tunnelNextRetryAt: new Date(Date.now() + TUNNEL_RETRY_COOLDOWN_MS).toISOString(),
+    };
+    saveLocalOpenBridgeState(nextState);
+    throw error;
+  }
   const nextState: LocalOpenBridgeState = {
     ...state,
     publicUrl: publicTunnel.publicUrl,
     tunnelTargetUrl: targetUrl,
     tunnelPid: publicTunnel.pid,
+    tunnelLastAttemptAt,
+    tunnelLastError: undefined,
+    tunnelNextRetryAt: undefined,
   };
   saveLocalOpenBridgeState(nextState);
   return nextState;
@@ -863,6 +896,9 @@ function readLocalOpenBridgeState(): LocalOpenBridgeState | undefined {
         publicUrl: cleanString(parsed.publicUrl),
         tunnelTargetUrl: cleanString(parsed.tunnelTargetUrl),
         tunnelPid: typeof parsed.tunnelPid === 'number' ? parsed.tunnelPid : undefined,
+        tunnelLastAttemptAt: cleanString(parsed.tunnelLastAttemptAt),
+        tunnelLastError: cleanString(parsed.tunnelLastError),
+        tunnelNextRetryAt: cleanString(parsed.tunnelNextRetryAt),
       }
       : undefined;
   } catch {

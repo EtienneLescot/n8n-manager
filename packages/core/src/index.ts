@@ -55,6 +55,9 @@ export interface N8nInstanceRef {
   tunnelPublicUrl?: string;
   tunnelTargetUrl?: string;
   tunnelPid?: number;
+  tunnelLastAttemptAt?: string;
+  tunnelLastError?: string;
+  tunnelNextRetryAt?: string;
 }
 
 export interface N8nHealthSnapshot {
@@ -82,6 +85,9 @@ export interface N8nTunnelSnapshot {
   targetUrl?: string;
   pid?: number;
   startedAt?: string;
+  lastAttemptAt?: string;
+  lastError?: string;
+  nextRetryAt?: string;
 }
 
 export interface N8nRuntimeStatusSnapshot extends N8nHealthSnapshot {
@@ -99,6 +105,34 @@ export interface N8nRuntimeStatusSnapshot extends N8nHealthSnapshot {
 }
 
 export type N8nRuntimeConsumer = 'vscode' | 'cli' | 'plugin' | 'agent' | 'manager';
+const TUNNEL_RETRY_COOLDOWN_MS = 10 * 60 * 1000;
+
+export type N8nInstanceAccessMode = 'observe' | 'reconcile';
+
+export interface ResolveN8nInstanceAccessInput {
+  workspaceRoot?: string;
+  instanceId?: string;
+  syncFolderDefault?: import('./configuration-service.js').N8nSyncFolderDefaultPolicy;
+  mode?: N8nInstanceAccessMode;
+  targetPath?: string;
+  consumer?: N8nRuntimeConsumer;
+}
+
+export interface N8nInstanceAccessSnapshot {
+  instanceId: string;
+  instanceName: string;
+  apiBaseUrl: string;
+  publicN8nUrl?: string;
+  authUrl?: string;
+  publicUrlEnabled: boolean;
+  desiredState?: 'running' | 'stopped';
+  runtimeStatus: N8nInstanceStatus;
+  ready: boolean;
+  blocked?: N8nRuntimeStatusSnapshot['blocked'];
+  tunnel?: N8nTunnelSnapshot;
+  authBridge?: N8nTunnelSnapshot;
+  warnings: string[];
+}
 
 export interface PreparedEffectiveN8nContext {
   context: EffectiveN8nContext;
@@ -300,11 +334,24 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       : undefined;
     const warnings: string[] = [];
     let tunnel: { publicUrl: string; targetUrl: string; pid: number } | undefined;
+    let tunnelLastAttemptAt: string | undefined;
+    let tunnelLastError: string | undefined;
+    let tunnelNextRetryAt: string | undefined;
     if (input.mode === 'managed-local-docker' && shouldTunnel) {
-      try {
-        tunnel = await this.ensureTunnel(baseUrl, 'ensure', existingState);
-      } catch (error) {
-        warnings.push(`Public URL could not be created: ${formatCommandError(error)}`);
+      if (existingState && shouldSkipTunnelAttempt(existingState, 'ensure')) {
+        tunnelLastAttemptAt = existingState.tunnelLastAttemptAt;
+        tunnelLastError = existingState.tunnelLastError;
+        tunnelNextRetryAt = existingState.tunnelNextRetryAt;
+        warnings.push(`Public URL creation is temporarily paused after a previous Cloudflare failure.${tunnelNextRetryAt ? ` Next retry after ${tunnelNextRetryAt}.` : ''}${tunnelLastError ? ` ${tunnelLastError}` : ''}`);
+      } else {
+        tunnelLastAttemptAt = new Date().toISOString();
+        try {
+          tunnel = await this.ensureTunnel(baseUrl, 'ensure', existingState);
+        } catch (error) {
+          tunnelLastError = formatCommandError(error);
+          tunnelNextRetryAt = new Date(Date.now() + TUNNEL_RETRY_COOLDOWN_MS).toISOString();
+          warnings.push(`Public URL could not be created: ${tunnelLastError}`);
+        }
       }
     } else if (existingState?.tunnelPublicUrl && existingState.tunnelPid) {
       tunnel = { publicUrl: existingState.tunnelPublicUrl, targetUrl: existingState.tunnelTargetUrl ?? existingState.baseUrl ?? existingState.tunnelPublicUrl, pid: existingState.tunnelPid };
@@ -346,6 +393,9 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       tunnelPublicUrl: tunnel?.publicUrl,
       tunnelTargetUrl: shouldTunnel ? (tunnel?.targetUrl ?? baseUrl) : undefined,
       tunnelPid: tunnel?.pid,
+      tunnelLastAttemptAt,
+      tunnelLastError: tunnel ? undefined : tunnelLastError,
+      tunnelNextRetryAt: tunnel ? undefined : tunnelNextRetryAt,
       warnings: warnings.length ? warnings : undefined,
     };
     await this.writeInstance(instance);
@@ -439,13 +489,32 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     }
 
     const targetUrl = input.targetUrl ?? instance.baseUrl ?? `http://127.0.0.1:${this.port}`;
-    const tunnel = await this.ensureTunnel(targetUrl, input.action ?? 'ensure', instance);
+    let tunnel: { publicUrl: string; targetUrl: string; pid: number } | undefined;
+    let tunnelError: string | undefined;
+    let tunnelLastAttemptAt: string | undefined;
+    let tunnelNextRetryAt: string | undefined;
+    if (shouldSkipTunnelAttempt(instance, input.action ?? 'ensure')) {
+      tunnelError = instance.tunnelLastError;
+      tunnelLastAttemptAt = instance.tunnelLastAttemptAt;
+      tunnelNextRetryAt = instance.tunnelNextRetryAt;
+    } else {
+      tunnelLastAttemptAt = new Date().toISOString();
+      try {
+        tunnel = await this.ensureTunnel(targetUrl, input.action ?? 'ensure', instance);
+      } catch (error) {
+        tunnelError = formatCommandError(error);
+        tunnelNextRetryAt = new Date(Date.now() + TUNNEL_RETRY_COOLDOWN_MS).toISOString();
+      }
+    }
     const next = {
       ...instance,
       publicUrlEnabled: true,
       tunnelPublicUrl: tunnel?.publicUrl,
       tunnelTargetUrl: tunnel?.targetUrl ?? targetUrl,
       tunnelPid: tunnel?.pid,
+      tunnelLastAttemptAt,
+      tunnelLastError: tunnel ? undefined : tunnelError,
+      tunnelNextRetryAt: tunnel ? undefined : tunnelNextRetryAt,
     };
     await this.writeInstance(next);
 
@@ -465,6 +534,9 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       publicUrl: tunnel?.publicUrl,
       targetUrl: tunnel?.targetUrl ?? targetUrl,
       pid: tunnel?.pid,
+      lastAttemptAt: tunnelLastAttemptAt,
+      lastError: tunnelError,
+      nextRetryAt: tunnelNextRetryAt,
     };
   }
 
@@ -480,6 +552,9 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       tunnelPublicUrl: undefined,
       tunnelTargetUrl: input.disable === false ? (instance.tunnelTargetUrl ?? instance.baseUrl) : undefined,
       tunnelPid: undefined,
+      tunnelLastAttemptAt: undefined,
+      tunnelLastError: undefined,
+      tunnelNextRetryAt: undefined,
     });
     return { enabled: input.disable === false && Boolean(instance.publicUrlEnabled), running: false };
   }
@@ -490,7 +565,14 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       return { enabled: false, running: false };
     }
     if (!instance.tunnelPublicUrl) {
-      return { enabled: true, running: false, targetUrl: instance.tunnelTargetUrl ?? instance.baseUrl };
+      return {
+        enabled: true,
+        running: false,
+        targetUrl: instance.tunnelTargetUrl ?? instance.baseUrl,
+        lastAttemptAt: instance.tunnelLastAttemptAt,
+        lastError: instance.tunnelLastError,
+        nextRetryAt: instance.tunnelNextRetryAt,
+      };
     }
     const running = Boolean(instance.tunnelPid && isPidAlive(instance.tunnelPid));
     if (!running) {
@@ -505,6 +587,9 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       publicUrl: instance.tunnelPublicUrl,
       targetUrl: instance.tunnelTargetUrl,
       pid: running ? instance.tunnelPid : undefined,
+      lastAttemptAt: instance.tunnelLastAttemptAt,
+      lastError: running ? undefined : instance.tunnelLastError,
+      nextRetryAt: running ? undefined : instance.tunnelNextRetryAt,
     };
   }
 
@@ -1301,8 +1386,9 @@ export class N8nRuntimeOrchestrator {
     const tunnel = await lifecycle.getPublicTunnelStatus();
     const blocked = blockedFromHealth(health, instance);
     const authBridgeTunnel = authBridgeTunnelSnapshot();
-    const authBridgeOpenUrl = authBridgeTunnel.publicUrl
-      ? await getManagedN8nAuthBridgeOpenUrl(instance)
+    const authBridgeTargetUrl = tunnel.running ? tunnel.publicUrl : undefined;
+    const authBridgeOpenUrl = authBridgeTunnel.publicUrl && authBridgeTargetUrl
+      ? await getManagedN8nAuthBridgeOpenUrl(instance, authBridgeTargetUrl)
       : undefined;
     return {
       ...health,
@@ -1313,6 +1399,56 @@ export class N8nRuntimeOrchestrator {
       tunnel,
       authBridgeTunnel,
       authBridgeOpenUrl,
+    };
+  }
+
+  async resolveInstanceAccess(input: ResolveN8nInstanceAccessInput = {}): Promise<N8nInstanceAccessSnapshot> {
+    const context = this.configuration.resolveEffectiveContext({
+      workspaceRoot: input.workspaceRoot,
+      instanceId: input.instanceId,
+      syncFolderDefault: input.syncFolderDefault,
+    });
+    const instance = context.instance;
+    const warnings: string[] = [];
+    let runtime = await this.getRuntimeStatus(instance.id);
+
+    if (input.mode === 'reconcile' && instance.mode === 'managed-local-docker' && instance.desiredState !== 'stopped') {
+      if (!runtime.ready) {
+        runtime = await this.startInstance(instance.id, { ensurePublicUrl: false });
+      }
+      if (instance.publicUrlEnabled) {
+        runtime = await this.ensureTunnel(instance.id);
+      }
+    }
+
+    warnings.push(...(runtime.warnings ?? []));
+    if (runtime.tunnel?.lastError) {
+      warnings.push(runtime.tunnel.lastError);
+    }
+    if (runtime.authBridgeTunnel?.lastError) {
+      warnings.push(runtime.authBridgeTunnel.lastError);
+    }
+
+    const publicN8nUrl = runtime.tunnel?.running ? runtime.tunnel.publicUrl : undefined;
+    const authTargetUrl = publicN8nUrl ? buildAccessTargetUrl(publicN8nUrl, input.targetPath) : undefined;
+    const authUrl = runtime.authBridgeTunnel?.running && authTargetUrl
+      ? await getManagedN8nAuthBridgeOpenUrl(instance, authTargetUrl)
+      : undefined;
+
+    return {
+      instanceId: instance.id,
+      instanceName: instance.name,
+      apiBaseUrl: context.apiBaseUrl,
+      publicN8nUrl,
+      authUrl,
+      publicUrlEnabled: Boolean(instance.publicUrlEnabled),
+      desiredState: instance.desiredState,
+      runtimeStatus: runtime.status,
+      ready: runtime.ready,
+      blocked: runtime.blocked,
+      tunnel: runtime.tunnel,
+      authBridge: runtime.authBridgeTunnel,
+      warnings: [...new Set(warnings.filter(Boolean))],
     };
   }
 
@@ -1410,9 +1546,13 @@ export class N8nRuntimeOrchestrator {
     } else {
       await lifecycle.start();
     }
-    await lifecycle.ensurePublicTunnel({ action: input.action ?? 'ensure' });
+    const tunnel = await lifecycle.ensurePublicTunnel({ action: input.action ?? 'ensure' });
     await this.syncPrivateRuntimeState(instance);
-    const warnings = await this.ensureAuthBridgeTunnelIfNeeded(true);
+    const warnings = tunnel.running
+      ? await this.ensureAuthBridgeTunnelIfNeeded(true)
+      : tunnel.lastError
+        ? [`Public URL could not be created: ${tunnel.lastError}`]
+        : [];
     const status = await this.getRuntimeStatus(instance.id);
     return warnings.length ? { ...status, warnings } : status;
   }
@@ -1522,6 +1662,9 @@ function toRuntimePublicInstance(instance: GlobalN8nInstance, apiKey?: string): 
     provider: instance.provider,
     publicUrlEnabled: instance.publicUrlEnabled,
     desiredState: instance.desiredState,
+    tunnelLastAttemptAt: instance.tunnelLastAttemptAt,
+    tunnelLastError: instance.tunnelLastError,
+    tunnelNextRetryAt: instance.tunnelNextRetryAt,
     containerName: readMetadataString(metadata, 'containerName'),
     volumeName: readMetadataString(metadata, 'volumeName'),
     image: readMetadataString(metadata, 'image'),
@@ -1543,6 +1686,9 @@ function tunnelSnapshotFromInstance(instance: GlobalN8nInstance): N8nTunnelSnaps
     publicUrl: instance.tunnelPublicUrl,
     targetUrl: instance.tunnelTargetUrl,
     pid: running ? instance.tunnelPid : undefined,
+    lastAttemptAt: instance.tunnelLastAttemptAt,
+    lastError: running ? undefined : instance.tunnelLastError,
+    nextRetryAt: running ? undefined : instance.tunnelNextRetryAt,
   });
 }
 
@@ -1555,8 +1701,23 @@ function authBridgeTunnelSnapshot(): N8nTunnelSnapshot {
     publicUrl: status.publicUrl,
     targetUrl: status.tunnelTargetUrl,
     pid: status.tunnelPid,
+    lastAttemptAt: status.tunnelLastAttemptAt,
+    lastError: status.tunnelRunning ? undefined : status.tunnelLastError,
+    nextRetryAt: status.tunnelRunning ? undefined : status.tunnelNextRetryAt,
     startedAt: status.startedAt,
   });
+}
+
+function shouldSkipTunnelAttempt(instance: Pick<N8nInstanceRef, 'tunnelNextRetryAt'>, action: N8nTunnelAction): boolean {
+  if (action === 'refresh') return false;
+  if (!instance.tunnelNextRetryAt) return false;
+  return Date.parse(instance.tunnelNextRetryAt) > Date.now();
+}
+
+function buildAccessTargetUrl(baseUrl: string, targetPath?: string): string {
+  if (!targetPath) return baseUrl.replace(/\/+$/, '');
+  const normalizedPath = targetPath.startsWith('/') ? targetPath : `/${targetPath}`;
+  return new URL(normalizedPath, `${baseUrl.replace(/\/+$/, '')}/`).toString();
 }
 
 function blockedFromHealth(

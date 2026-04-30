@@ -356,15 +356,68 @@ export async function runCli(argv = process.argv.slice(2)): Promise<number> {
         ? resolveInstance(config, readFlag(argv, '--instance'), { required: true })
         : undefined;
       const workspaceRoot = readFlag(argv, '--workspace-root') ?? inferWorkspaceRootFromCwd();
+      const workflowUrl = readFlag(argv, '--workflow-url');
+      const access = await runtime.resolveInstanceAccess({
+        workspaceRoot,
+        instanceId: selected?.id,
+        syncFolderDefault: workspaceRoot ? 'workspace' : 'global',
+        consumer: 'agent',
+        mode: 'reconcile',
+        targetPath: workflowAccessTargetPath(workflowId, workflowUrl),
+      });
+      if (access.authUrl) {
+        printJson({
+          __type: 'workflow-embed',
+          kind: 'workflow',
+          workflowId,
+          url: access.authUrl,
+          via: 'self-contained-auth',
+          title: readFlag(argv, '--title'),
+          diagram: readFlag(argv, '--diagram'),
+          presented: true,
+        });
+        return 0;
+      }
       printJson(await presentWorkflowResult({
         workflowId,
-        workflowUrl: readFlag(argv, '--workflow-url'),
+        workflowUrl,
         title: readFlag(argv, '--title'),
         diagram: readFlag(argv, '--diagram'),
         instanceId: selected?.id,
         workspaceRoot,
       }, config));
       return 0;
+    }
+
+    if (command === 'show') {
+      const selected = readFlag(argv, '--instance')
+        ? resolveInstance(config, readFlag(argv, '--instance'), { required: true })
+        : undefined;
+      const workspaceRoot = readFlag(argv, '--workspace-root') ?? inferWorkspaceRootFromCwd();
+      const access = await runtime.resolveInstanceAccess({
+        workspaceRoot,
+        instanceId: selected?.id,
+        syncFolderDefault: workspaceRoot ? 'workspace' : 'global',
+        consumer: 'cli',
+        mode: argv.includes('--reconcile') ? 'reconcile' : 'observe',
+      });
+      if (subcommand === 'url' || subcommand === 'auth-url') {
+        printTextOrJson(access.authUrl ?? '', argv, { access });
+        return 0;
+      }
+      if (subcommand === 'api-url') {
+        printTextOrJson(access.apiBaseUrl, argv, { access });
+        return 0;
+      }
+      if (subcommand === 'public-url') {
+        printTextOrJson(access.publicN8nUrl ?? '', argv, { access });
+        return 0;
+      }
+      if (subcommand === 'access') {
+        printJson(access);
+        return 0;
+      }
+      throw new Error('Unknown show command. Use: show url|auth-url|api-url|public-url|access');
     }
 
     if (command === 'auth-bridge') {
@@ -473,6 +526,18 @@ function readFlag(argv: string[], flag: string): string | undefined {
   return match ? match.slice(prefix.length) : undefined;
 }
 
+function workflowAccessTargetPath(workflowId: string, workflowUrl?: string): string {
+  if (workflowUrl) {
+    try {
+      const parsed = new URL(workflowUrl);
+      return `${parsed.pathname}${parsed.search}${parsed.hash}` || '/';
+    } catch {
+      // Fall through to ID-based path.
+    }
+  }
+  return `/workflow/${encodeURIComponent(workflowId)}`;
+}
+
 function inferWorkspaceRootFromCwd(cwd = process.cwd()): string | undefined {
   let current = path.resolve(cwd);
   while (true) {
@@ -576,6 +641,14 @@ function printJson(value: unknown): void {
   console.log(JSON.stringify(value, null, 2));
 }
 
+function printTextOrJson(text: string, argv: string[], value: unknown): void {
+  if (argv.includes('--json')) {
+    printJson(value);
+    return;
+  }
+  console.log(text);
+}
+
 function printHelp(): void {
   console.log(`n8n-manager
 
@@ -596,6 +669,7 @@ Usage:
   n8n-manager config set-sync-folder <path>
   n8n-manager auth set --url URL (--api-key KEY | --api-key-stdin) [--name NAME] [--id ID] [--no-select]
   n8n-manager auth test [--instance <id-or-name>]
+  n8n-manager show url|auth-url|api-url|public-url|access [--instance <id-or-name>] [--reconcile] [--json]
   n8n-manager projects list [--instance <id-or-name>]
   n8n-manager projects select <project-id-or-name> [--instance <id-or-name>]
   n8n-manager agent instructions [--write PATH] [--workspace-root PATH]

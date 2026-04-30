@@ -25,6 +25,9 @@ export interface N8nConfigurationLifecycleInstanceRef {
   tunnelPublicUrl?: string;
   tunnelTargetUrl?: string;
   tunnelPid?: number;
+  tunnelLastAttemptAt?: string;
+  tunnelLastError?: string;
+  tunnelNextRetryAt?: string;
 }
 
 export type N8nInstanceProvider = 'docker' | 'external' | 'none';
@@ -63,6 +66,9 @@ export interface GlobalN8nInstance {
   tunnelPublicUrl?: string;
   tunnelTargetUrl?: string;
   tunnelPid?: number;
+  tunnelLastAttemptAt?: string;
+  tunnelLastError?: string;
+  tunnelNextRetryAt?: string;
   createdAt?: string;
   updatedAt?: string;
   metadata?: Record<string, unknown>;
@@ -138,6 +144,9 @@ export interface UpsertGlobalN8nInstanceInput {
   tunnelPublicUrl?: string;
   tunnelTargetUrl?: string;
   tunnelPid?: number;
+  tunnelLastAttemptAt?: string;
+  tunnelLastError?: string;
+  tunnelNextRetryAt?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -215,6 +224,7 @@ export class N8nConfigurationService {
     const hasTunnelPublicUrlInput = Object.prototype.hasOwnProperty.call(input, 'tunnelPublicUrl');
     const hasTunnelTargetUrlInput = Object.prototype.hasOwnProperty.call(input, 'tunnelTargetUrl');
     const hasTunnelPidInput = Object.prototype.hasOwnProperty.call(input, 'tunnelPid');
+    const hasTunnelErrorInput = Object.prototype.hasOwnProperty.call(input, 'tunnelLastError');
 
     const mode = input.mode ?? existing?.mode ?? 'existing';
 
@@ -235,6 +245,9 @@ export class N8nConfigurationService {
       tunnelPublicUrl: cleanString(hasTunnelPublicUrlInput ? input.tunnelPublicUrl : existing?.tunnelPublicUrl),
       tunnelTargetUrl: cleanString(hasTunnelTargetUrlInput ? input.tunnelTargetUrl : existing?.tunnelTargetUrl),
       tunnelPid: hasTunnelPidInput ? (typeof input.tunnelPid === 'number' ? input.tunnelPid : undefined) : existing?.tunnelPid,
+      tunnelLastAttemptAt: cleanString(input.tunnelLastAttemptAt ?? existing?.tunnelLastAttemptAt),
+      tunnelLastError: cleanString(hasTunnelErrorInput ? input.tunnelLastError : existing?.tunnelLastError),
+      tunnelNextRetryAt: cleanString(input.tunnelNextRetryAt ?? existing?.tunnelNextRetryAt),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       metadata: input.metadata ?? existing?.metadata,
@@ -274,6 +287,9 @@ export class N8nConfigurationService {
       tunnelPublicUrl: instance.tunnelPublicUrl,
       tunnelTargetUrl: instance.tunnelTargetUrl,
       tunnelPid: instance.tunnelPid,
+      tunnelLastAttemptAt: instance.tunnelLastAttemptAt,
+      tunnelLastError: instance.tunnelLastError,
+      tunnelNextRetryAt: instance.tunnelNextRetryAt,
       metadata: stripUndefined({
         containerName: instance.containerName,
         volumeName: instance.volumeName,
@@ -339,6 +355,9 @@ export class N8nConfigurationService {
       tunnelPublicUrl: undefined,
       tunnelTargetUrl: undefined,
       tunnelPid: undefined,
+      tunnelLastAttemptAt: undefined,
+      tunnelLastError: undefined,
+      tunnelNextRetryAt: undefined,
       updatedAt: new Date().toISOString(),
     });
     const instances = config.instances.map((candidate) => candidate.id === instanceId ? nextInstance : candidate);
@@ -557,6 +576,9 @@ function sanitizeInstance(source: GlobalN8nInstance): GlobalN8nInstance {
     tunnelPid: typeof source.tunnelPid === 'number'
       ? source.tunnelPid
       : readMetadataNumber(source.metadata, 'tunnelPid'),
+    tunnelLastAttemptAt: cleanString(source.tunnelLastAttemptAt),
+    tunnelLastError: cleanString(source.tunnelLastError),
+    tunnelNextRetryAt: cleanString(source.tunnelNextRetryAt),
     createdAt: cleanString(source.createdAt),
     updatedAt: cleanString(source.updatedAt),
     metadata: source.metadata,
