@@ -80,8 +80,18 @@ test('presentWorkflowResult resolves the workspace-pinned instance before global
 test('presentWorkflowResult uses the public auth bridge URL for tunneled managed instances', async () => {
   const baseDir = tempDir();
   const previousHome = process.env.N8N_MANAGER_HOME;
+  const originalFetch = globalThis.fetch;
   process.env.N8N_MANAGER_HOME = baseDir;
   try {
+    globalThis.fetch = async (input, init) => {
+      if (
+        String(input) === 'http://127.0.0.1:3791/health'
+        || String(input) === 'https://auth-bridge.trycloudflare.com/health'
+      ) {
+        return new Response('OK');
+      }
+      return originalFetch(input, init);
+    };
     const runtimeStatePath = path.join(baseDir, 'runtime.json');
     fs.writeFileSync(runtimeStatePath, JSON.stringify({
       ownerEmail: 'owner@example.test',
@@ -119,6 +129,7 @@ test('presentWorkflowResult uses the public auth bridge URL for tunneled managed
     } else {
       process.env.N8N_MANAGER_HOME = previousHome;
     }
+    globalThis.fetch = originalFetch;
   }
 });
 

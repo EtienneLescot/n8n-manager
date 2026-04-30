@@ -839,14 +839,25 @@ function spawnLocalOpenBridgeProcess(): void {
   const logDir = path.join(resolveN8nManagerHome(), 'logs');
   fs.mkdirSync(logDir, { recursive: true });
   const logFd = fs.openSync(path.join(logDir, 'local-open-bridge.log'), 'a');
-  const entrypoint = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'local-open-bridge-entrypoint.js');
-  const child = spawn(process.execPath, [entrypoint], {
+  const entrypoint = resolveLocalOpenBridgeEntrypoint();
+  const child = spawn(process.execPath, entrypoint.args, {
     detached: true,
     stdio: ['ignore', logFd, logFd],
     env: process.env,
   });
   child.unref();
   fs.closeSync(logFd);
+}
+
+function resolveLocalOpenBridgeEntrypoint(): { args: string[] } {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const compiledEntrypoint = path.resolve(currentDir, 'local-open-bridge-entrypoint.js');
+  if (fs.existsSync(compiledEntrypoint)) {
+    return { args: [compiledEntrypoint] };
+  }
+
+  const sourceEntrypoint = path.resolve(currentDir, 'local-open-bridge-entrypoint.ts');
+  return { args: ['--import', 'tsx', sourceEntrypoint] };
 }
 
 async function waitForLocalOpenBridgeState(timeoutMs: number): Promise<LocalOpenBridgeState> {
