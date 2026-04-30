@@ -1,30 +1,8 @@
 # Changelog
 
-## [1.0.2](https://github.com/EtienneLescot/n8n-manager/compare/v1.0.1...v1.0.2) (2026-04-30)
-
-
-### Bug Fixes
-
-* test workflow after merge ([f86a85f](https://github.com/EtienneLescot/n8n-manager/commit/f86a85fa9076cf293e2a75a47e1c6f242ae2184a))
-
-## [1.0.1](https://github.com/EtienneLescot/n8n-manager/compare/v1.0.0...v1.0.1) (2026-04-30)
-
-
-### Bug Fixes
-
-* test patch bump for release please ([5485fcc](https://github.com/EtienneLescot/n8n-manager/commit/5485fcc1a977c8f79c22ebb54a8ae9dcb2148904))
-
-## 1.0.0 (2026-04-30)
-
+## 0.1.0 (2026-04-30)
 
 ### Features
 
-* add runtime orchestration commands ([c3e5785](https://github.com/EtienneLescot/n8n-manager/commit/c3e5785cb9459505b7efe154fe8f46e0aa7a4745))
-* centralize n8n instance configuration ([6089725](https://github.com/EtienneLescot/n8n-manager/commit/60897259b99b68fb6ee7982f7ec073876b5b21ec))
+- Initial release
 
-
-### Bug Fixes
-
-* pair auth bridge tunnel with n8n tunnel ([f5c98ef](https://github.com/EtienneLescot/n8n-manager/commit/f5c98ef69ba4afaa2aeacb25795c5bbcaf35ff7b))
-* resolve workflow presentation from workspace context ([bc8774b](https://github.com/EtienneLescot/n8n-manager/commit/bc8774bad6b3f5f93351bd5a9676412ed1e28354))
-* use googleapis/release-please-action and remove deprecated options ([7b9acd2](https://github.com/EtienneLescot/n8n-manager/commit/7b9acd2229ce7b4df7cd24f8e4e751c6016f0e9a))
