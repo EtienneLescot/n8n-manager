@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.4.0...@n8n-as-code/n8n-manager-core-v0.4.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* **core:** handle Docker port conflicts by falling back to available ports ([0dc894e](https://github.com/EtienneLescot/n8n-manager/commit/0dc894ede2e6ecd5c9b33b4c5780406f11de26c3))
+
 ## [0.4.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.3.0...@n8n-as-code/n8n-manager-core-v0.4.0) (2026-04-30)
 
 
