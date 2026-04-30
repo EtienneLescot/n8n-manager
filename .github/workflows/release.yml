@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     branches: [main, next]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, closed]
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -12,9 +15,29 @@ permissions:
   id-token: write
 
 jobs:
+  release-please:
+    name: Release Please
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run release-please
+        uses: google-github-actions/release-please-action@v4
+        with:
+          release-type: node
+          package-name: n8n-manager
+          monorepo-tags: true
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   publish-stable:
     name: Publish Stable
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && github.actor == 'github-actions[bot]'
+    needs: release-please
     runs-on: ubuntu-latest
     environment: prod
     env:
@@ -65,7 +88,6 @@ jobs:
           done
 
       - name: Push git tags
-        if: github.event_name == 'push'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -87,7 +109,7 @@ jobs:
 
   publish-next:
     name: Publish Next
-    if: github.ref == 'refs/heads/next'
+    if: github.ref == 'refs/heads/next' && github.event_name == 'push'
     runs-on: ubuntu-latest
     environment: prod
     env:
@@ -138,7 +160,6 @@ jobs:
           done
 
       - name: Push git tags
-        if: github.event_name == 'push'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
