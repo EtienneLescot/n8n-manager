@@ -157,7 +157,7 @@ export async function presentWorkflowResult(
     instanceId: input.instanceId,
     syncFolderDefault: input.workspaceRoot ? 'workspace' : 'global',
   });
-  const workflowUrl = resolveWorkflowUrl(workflowId, context.host, input.workflowUrl);
+  const workflowUrl = resolveWorkflowUrl(workflowId, context.apiBaseUrl, input.workflowUrl);
   const link = await resolveWorkflowOpenLink(workflowUrl, context.instance);
 
   return {
@@ -187,7 +187,7 @@ export async function resolveWorkflowWebviewOpen(
     instanceId: input.instanceId,
     syncFolderDefault: input.workspaceRoot ? 'workspace' : 'global',
   });
-  const workflowUrl = resolveWorkflowUrl(workflowId, context.host, input.workflowUrl);
+  const workflowUrl = resolveWorkflowUrl(workflowId, context.apiBaseUrl, input.workflowUrl);
   const targetUrl = rewriteUrlToBase(workflowUrl, input.proxyBaseUrl);
   const ownerCredentials = await resolveManagedN8nOwnerCredentialsForInstance(context.instance);
   if (!ownerCredentials) {

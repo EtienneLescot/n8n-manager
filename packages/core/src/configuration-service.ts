@@ -91,7 +91,13 @@ export interface EffectiveN8nContext {
   instance: GlobalN8nInstance;
   activeInstanceId: string;
   activeInstanceName: string;
+  /** Technical base URL used for API calls and local proxy targets. */
+  apiBaseUrl: string;
+  /** Optional public n8n URL. User-facing surfaces should prefer auth bridge URLs over this raw URL. */
+  publicBaseUrl?: string;
+  /** @deprecated Use apiBaseUrl for API calls. */
   host: string;
+  /** @deprecated Use apiBaseUrl for API calls. */
   baseUrl: string;
   apiKey?: string;
   syncFolder: string;
@@ -379,10 +385,11 @@ export class N8nConfigurationService {
       throw new Error(`Active n8n instance "${activeInstanceId}" does not exist in the global n8n-manager store.`);
     }
 
-    const host = resolveInstanceHost(instance);
-    if (!host) {
+    const apiBaseUrl = resolveInstanceApiBaseUrl(instance);
+    if (!apiBaseUrl) {
       throw new Error(`n8n instance "${instance.name}" has no base URL configured.`);
     }
+    const publicBaseUrl = resolveInstancePublicBaseUrl(instance);
 
     const workspaceSyncFolder = cleanString(workspace.syncFolder);
     const syncFolderDefault = input.syncFolderDefault ?? 'global';
@@ -404,8 +411,10 @@ export class N8nConfigurationService {
       instance,
       activeInstanceId: instance.id,
       activeInstanceName: instance.name,
-      host,
-      baseUrl: host,
+      apiBaseUrl,
+      publicBaseUrl,
+      host: apiBaseUrl,
+      baseUrl: apiBaseUrl,
       apiKey: this.getApiKey(instance.id),
       syncFolder,
       projectId,
@@ -584,8 +593,12 @@ function resolveWorkspacePath(workspaceRoot: string, targetPath: string): string
   return path.isAbsolute(targetPath) ? targetPath : path.resolve(workspaceRoot, targetPath);
 }
 
-function resolveInstanceHost(instance: GlobalN8nInstance): string | undefined {
-  return cleanString(instance.tunnelPublicUrl) ?? cleanString(instance.baseUrl);
+function resolveInstanceApiBaseUrl(instance: GlobalN8nInstance): string | undefined {
+  return cleanString(instance.baseUrl) ?? cleanString(instance.tunnelPublicUrl);
+}
+
+function resolveInstancePublicBaseUrl(instance: GlobalN8nInstance): string | undefined {
+  return cleanString(instance.tunnelPublicUrl);
 }
 
 function readMetadataString(metadata: unknown, key: string): string | undefined {
