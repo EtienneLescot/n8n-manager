@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     branches: [main, next]
+  workflow_dispatch:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -14,7 +15,7 @@ permissions:
 jobs:
   release-please:
     name: Release Please
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
@@ -35,7 +36,10 @@ jobs:
 
   publish-stable:
     name: Publish Stable
-    if: github.ref == 'refs/heads/main' && needs.release-please.outputs.releases_created == 'true'
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || needs.release-please.outputs.releases_created == 'true')
     needs: release-please
     runs-on: ubuntu-latest
     environment: prod
