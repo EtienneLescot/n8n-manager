@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.2.1...@n8n-as-code/n8n-manager-v0.3.0) (2026-04-30)
+
+
+### Features
+
+* **cli:** add instance access commands and improve tunnel error handling ([9e91298](https://github.com/EtienneLescot/n8n-manager/commit/9e91298b2c69de01c243602ee8f018c5d4e1224d))
+
 ## [0.2.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.2.0...@n8n-as-code/n8n-manager-v0.2.1) (2026-04-30)
 
 
