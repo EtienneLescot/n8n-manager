@@ -34,6 +34,36 @@ jobs:
           prerelease: false
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  release-please-next:
+    name: Release Please Next
+    if: github.ref == 'refs/heads/next' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run release-please
+        uses: google-github-actions/release-please-action@v4
+        with:
+          release-type: node
+          package-name: n8n-manager
+          monorepo-tags: true
+          prerelease: true
+          skip-github-pull-request: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit version bump
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --quiet || git commit -m "chore: release next version"
+
+      - name: Push version bump
+        run: git push origin next
+
   publish-stable:
     name: Publish Stable
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && github.actor == 'github-actions[bot]'
@@ -110,6 +140,7 @@ jobs:
   publish-next:
     name: Publish Next
     if: github.ref == 'refs/heads/next' && github.event_name == 'push'
+    needs: release-please-next
     runs-on: ubuntu-latest
     environment: prod
     env:
@@ -162,7 +193,7 @@ jobs:
       - name: Push git tags
         run: |
           git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
           for pkg in \
             "@n8n-as-code/n8n-manager-core:packages/core" \
             "@n8n-as-code/n8n-credentials-manager:packages/credentials-manager" \
