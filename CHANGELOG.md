@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/EtienneLescot/n8n-manager/compare/v1.0.2...v1.0.3) (2026-04-30)
+
+
+### Bug Fixes
+
+* trigger new release please PR ([5ad3a4e](https://github.com/EtienneLescot/n8n-manager/commit/5ad3a4e8c9e40ab307788317f3ba9b288bd4620e))
+
 ## [1.0.2](https://github.com/EtienneLescot/n8n-manager/compare/v1.0.1...v1.0.2) (2026-04-30)
 
 
