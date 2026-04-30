@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.4.1...@n8n-as-code/n8n-manager-core-v0.5.0) (2026-04-30)
+
+
+### Features
+
+* **core:** improve local bridge process spawning and test reliability ([b364e66](https://github.com/EtienneLescot/n8n-manager/commit/b364e66e05b070b678c1d47be869d35c5a1abe0d))
+
 ## [0.4.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.4.0...@n8n-as-code/n8n-manager-core-v0.4.1) (2026-04-30)
 
 
