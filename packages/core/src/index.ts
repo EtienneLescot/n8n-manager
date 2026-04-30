@@ -114,6 +114,7 @@ export interface ResolveN8nInstanceAccessInput {
   instanceId?: string;
   syncFolderDefault?: import('./configuration-service.js').N8nSyncFolderDefaultPolicy;
   mode?: N8nInstanceAccessMode;
+  refreshPublicUrl?: boolean;
   targetPath?: string;
   consumer?: N8nRuntimeConsumer;
 }
@@ -200,7 +201,7 @@ const DEFAULT_HEALTH_TIMEOUT_MS = 300_000;
 const DEFAULT_EDITOR_TIMEOUT_MS = 90_000;
 const DEFAULT_OWNER_BOOTSTRAP_TIMEOUT_MS = 45_000;
 const DEFAULT_RETRY_DELAY_MS = 1_500;
-const CLOUDFLARE_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+const CLOUDFLARE_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/g;
 const OWNER_SETUP_PATH = '/rest/owner/setup';
 const LOGIN_PATH = '/rest/login';
 const API_KEYS_PATH = '/rest/api-keys';
@@ -460,7 +461,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
 
     const instance = await this.readInstance();
     if (instance?.mode === 'managed-local-docker') {
-      await this.stopTunnel(instance);
+      await this.stopTunnel(instance, 'lifecycle.delete');
       const containerName = instance.containerName ?? this.containerName;
       await this.removeDockerContainer(containerName);
       if (input.destroyData) {
@@ -545,7 +546,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     if (!instance) {
       return { enabled: false, running: false };
     }
-    await this.stopTunnel(instance);
+    await this.stopTunnel(instance, `lifecycle.stopPublicTunnel(disable=${input.disable !== false})`);
     await this.writeInstance({
       ...instance,
       publicUrlEnabled: input.disable === false ? instance.publicUrlEnabled : false,
@@ -1086,11 +1087,12 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     }
 
     if (existingState?.tunnelPid && isPidAlive(existingState.tunnelPid)) {
-      await this.stopTunnel(existingState);
+      await this.stopTunnel(existingState, 'lifecycle.ensureTunnel.replace-existing');
     }
 
     const bin = await installCloudflaredIfNeeded(this.cloudflaredBin);
-    const logFile = path.join(os.tmpdir(), `n8n-manager-cloudflared-${Date.now()}.log`);
+    const logFile = path.join(path.dirname(this.statePath), `${this.instanceId}-cloudflared-${Date.now()}.log`);
+    await fs.mkdir(path.dirname(logFile), { recursive: true });
     const child = spawn(bin, ['tunnel', '--url', targetUrl, '--no-autoupdate', '--logfile', logFile], {
       detached: true,
       stdio: 'ignore',
@@ -1103,23 +1105,18 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     child.unref();
     try {
       const publicUrl = await waitForTunnelPublicUrl(child.pid, logFile);
-      try {
-        fssync.unlinkSync(logFile);
-      } catch {
-        // ignore
-      }
       return { publicUrl, targetUrl, pid: child.pid };
     } catch (error) {
-      await terminateProcess(child.pid);
+      await terminateProcess(child.pid, `lifecycle.ensureTunnel.failed:${this.instanceId}`);
       throw error;
     }
   }
 
-  private async stopTunnel(instance: N8nInstanceRef): Promise<void> {
+  private async stopTunnel(instance: N8nInstanceRef, reason: string): Promise<void> {
     if (!instance.tunnelPid || !isPidAlive(instance.tunnelPid)) {
       return;
     }
-    await terminateProcess(instance.tunnelPid);
+    await terminateProcess(instance.tunnelPid, reason);
   }
 
   private async inspectDockerContainer(containerName: string): Promise<{ exists: boolean; running: boolean }> {
@@ -1384,6 +1381,14 @@ export class N8nRuntimeOrchestrator {
     const lifecycle = await this.lifecycleForInstance(instance);
     const health = await lifecycle.status();
     const tunnel = await lifecycle.getPublicTunnelStatus();
+    if (instance.tunnelPublicUrl && !tunnel.running) {
+      this.configuration.upsertInstance({
+        id: instance.id,
+        tunnelPublicUrl: undefined,
+        tunnelTargetUrl: tunnel.targetUrl ?? instance.tunnelTargetUrl ?? instance.baseUrl,
+        tunnelPid: undefined,
+      }, { setActive: false });
+    }
     const blocked = blockedFromHealth(health, instance);
     const authBridgeTunnel = authBridgeTunnelSnapshot();
     const authBridgeTargetUrl = tunnel.running ? tunnel.publicUrl : undefined;
@@ -1417,7 +1422,7 @@ export class N8nRuntimeOrchestrator {
         runtime = await this.startInstance(instance.id, { ensurePublicUrl: false });
       }
       if (instance.publicUrlEnabled) {
-        runtime = await this.ensureTunnel(instance.id);
+        runtime = await this.ensureTunnel(instance.id, { action: input.refreshPublicUrl ? 'refresh' : 'ensure' });
       }
     }
 
@@ -2014,7 +2019,8 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-async function terminateProcess(pid: number): Promise<void> {
+async function terminateProcess(pid: number, reason: string): Promise<void> {
+  recordTunnelTermination(pid, reason, 'SIGTERM');
   try {
     process.kill(-pid, 'SIGTERM');
   } catch {
@@ -2032,6 +2038,7 @@ async function terminateProcess(pid: number): Promise<void> {
   if (!isPidAlive(pid)) {
     return;
   }
+  recordTunnelTermination(pid, reason, 'SIGKILL');
   try {
     process.kill(-pid, 'SIGKILL');
   } catch {
@@ -2041,6 +2048,30 @@ async function terminateProcess(pid: number): Promise<void> {
       // Already gone.
     }
   }
+}
+
+function recordTunnelTermination(pid: number, reason: string, signal: 'SIGTERM' | 'SIGKILL'): void {
+  try {
+    const logPath = path.join(resolveN8nManagerHomeForLogs(), 'logs', 'tunnel-terminations.log');
+    fssync.mkdirSync(path.dirname(logPath), { recursive: true });
+    fssync.appendFileSync(logPath, JSON.stringify({
+      time: new Date().toISOString(),
+      pid,
+      signal,
+      reason,
+      stack: new Error().stack,
+    }) + '\n');
+  } catch {
+    // Best-effort diagnostics only.
+  }
+}
+
+function resolveN8nManagerHomeForLogs(): string {
+  const configuredHome = process.env.N8N_MANAGER_HOME?.trim();
+  if (configuredHome) return path.resolve(configuredHome);
+  const configuredStatePath = process.env.N8N_MANAGER_STATE_PATH?.trim();
+  if (configuredStatePath) return path.dirname(path.resolve(configuredStatePath));
+  return path.join(os.homedir(), '.n8n-manager');
 }
 
 async function installCloudflaredIfNeeded(explicitBin?: string): Promise<string> {
@@ -2133,8 +2164,9 @@ function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {
     const interval = setInterval(() => {
       try {
         const text = fssync.readFileSync(logFile, 'utf8');
-        const match = text.match(CLOUDFLARE_URL_PATTERN);
-        if (match) {
+        const matches = [...text.matchAll(CLOUDFLARE_URL_PATTERN)];
+        const match = matches[matches.length - 1];
+        if (match?.[0]) {
           clearInterval(interval);
           resolve(match[0]);
           return;

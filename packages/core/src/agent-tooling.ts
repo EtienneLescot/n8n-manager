@@ -18,7 +18,7 @@ const LOCAL_BRIDGE_HOST = '127.0.0.1';
 const DEFAULT_LOCAL_BRIDGE_PORT = 3791;
 const LOCAL_BRIDGE_START_TIMEOUT_MS = 8_000;
 const LOCAL_BRIDGE_TUNNEL_TIMEOUT_MS = 30_000;
-const CLOUDFLARE_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
+const CLOUDFLARE_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/g;
 const WORKFLOW_EMBED_TYPE = 'workflow-embed';
 const TUNNEL_RETRY_COOLDOWN_MS = 10 * 60 * 1000;
 const execFileAsync = promisify(execFile);
@@ -774,7 +774,8 @@ async function ensureLocalOpenBridgePublicTunnel(state: LocalOpenBridgeState): P
 
 async function startCloudflaredTunnel(targetUrl: string): Promise<{ publicUrl: string; pid: number }> {
   const bin = await installCloudflaredIfNeeded();
-  const logFile = path.join(os.tmpdir(), `n8n-manager-auth-bridge-cloudflared-${Date.now()}.log`);
+  const logFile = path.join(resolveN8nManagerHome(), 'logs', 'auth-bridge-cloudflared.log');
+  fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const child = spawn(bin, ['tunnel', '--url', targetUrl, '--no-autoupdate', '--logfile', logFile], {
     detached: true,
     stdio: 'ignore',
@@ -784,15 +785,10 @@ async function startCloudflaredTunnel(targetUrl: string): Promise<{ publicUrl: s
     throw new Error('cloudflared failed to start for n8n auth bridge.');
   }
 
-    child.unref();
-    try {
-      const publicUrl = await waitForTunnelPublicUrl(child.pid, logFile);
-      try {
-        fs.unlinkSync(logFile);
-      } catch {
-        // ignore
-      }
-      return { publicUrl, pid: child.pid };
+  child.unref();
+  try {
+    const publicUrl = await waitForTunnelPublicUrl(child.pid, logFile);
+    return { publicUrl, pid: child.pid };
     } catch (error) {
       await terminateProcess(child.pid);
       throw error;
@@ -1015,8 +1011,9 @@ function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {
     const interval = setInterval(() => {
       try {
         const text = fs.readFileSync(logFile, 'utf8');
-        const match = text.match(CLOUDFLARE_URL_PATTERN);
-        if (match) {
+        const matches = [...text.matchAll(CLOUDFLARE_URL_PATTERN)];
+        const match = matches[matches.length - 1];
+        if (match?.[0]) {
           clearInterval(interval);
           resolve(match[0]);
           return;

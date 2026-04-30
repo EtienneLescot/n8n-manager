@@ -225,6 +225,7 @@ export class N8nConfigurationService {
     const hasTunnelTargetUrlInput = Object.prototype.hasOwnProperty.call(input, 'tunnelTargetUrl');
     const hasTunnelPidInput = Object.prototype.hasOwnProperty.call(input, 'tunnelPid');
     const hasTunnelErrorInput = Object.prototype.hasOwnProperty.call(input, 'tunnelLastError');
+    const hasTunnelNextRetryAtInput = Object.prototype.hasOwnProperty.call(input, 'tunnelNextRetryAt');
 
     const mode = input.mode ?? existing?.mode ?? 'existing';
 
@@ -247,7 +248,7 @@ export class N8nConfigurationService {
       tunnelPid: hasTunnelPidInput ? (typeof input.tunnelPid === 'number' ? input.tunnelPid : undefined) : existing?.tunnelPid,
       tunnelLastAttemptAt: cleanString(input.tunnelLastAttemptAt ?? existing?.tunnelLastAttemptAt),
       tunnelLastError: cleanString(hasTunnelErrorInput ? input.tunnelLastError : existing?.tunnelLastError),
-      tunnelNextRetryAt: cleanString(input.tunnelNextRetryAt ?? existing?.tunnelNextRetryAt),
+      tunnelNextRetryAt: cleanString(hasTunnelNextRetryAtInput ? input.tunnelNextRetryAt : existing?.tunnelNextRetryAt),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       metadata: input.metadata ?? existing?.metadata,
