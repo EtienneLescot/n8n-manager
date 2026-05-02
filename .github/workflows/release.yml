@@ -34,6 +34,61 @@ jobs:
           manifest-file: .release-please-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve release PR branch
+        id: release-pr
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          RELEASE_PRS: ${{ steps.release.outputs.prs }}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const prs = JSON.parse(process.env.RELEASE_PRS ?? '[]');
+
+          if (!Array.isArray(prs) || prs.length === 0) {
+            throw new Error('release-please reported prs_created without PR metadata.');
+          }
+
+          if (prs.length !== 1) {
+            throw new Error(`Expected a single release PR, received ${prs.length}.`);
+          }
+
+          const { headBranchName, baseBranchName } = prs[0];
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `head_branch=${headBranchName}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `base_branch=${baseBranchName}\n`);
+          NODE
+
+      - name: Checkout release PR branch
+        if: steps.release.outputs.prs_created == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release-pr.outputs.head_branch }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Node.js for propagation
+        if: steps.release.outputs.prs_created == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14'
+
+      - name: Propagate internal dependency bumps
+        if: steps.release.outputs.prs_created == 'true'
+        run: node scripts/release/propagate-internal-dependency-bumps.mjs --base-ref "origin/${{ steps.release-pr.outputs.base_branch }}"
+
+      - name: Commit propagated release changes
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          if git diff --quiet; then
+            echo "No propagated release changes detected."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .release-please-manifest.json packages/*/package.json packages/*/CHANGELOG.md
+          git commit -m "chore: propagate internal dependency bumps"
+          git push origin HEAD:${{ steps.release-pr.outputs.head_branch }}
+
   publish-stable:
     name: Publish Stable
     if: >-
@@ -187,6 +242,10 @@ jobs:
           }
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `changed=true\nversion=${version}\n`);
           NODE
+
+      - name: Sync internal dependency versions
+        if: steps.next-version.outputs.changed == 'true'
+        run: node scripts/sync-dependencies.mjs --write
 
       - name: Refresh lockfile
         if: steps.next-version.outputs.changed == 'true'

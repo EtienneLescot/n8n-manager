@@ -12,7 +12,10 @@
   ],
   "scripts": {
     "build": "tsc -b packages/core packages/credentials-manager packages/cli",
+    "check:deps": "node scripts/sync-dependencies.mjs --check",
     "clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo",
+    "prepare": "lefthook install",
+    "sync:deps": "node scripts/sync-dependencies.mjs --write",
     "test": "node --import tsx --test packages/**/*.test.ts",
     "typecheck": "tsc -b packages/core packages/credentials-manager packages/cli --pretty"
   },
@@ -26,6 +29,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.10.0",
+    "lefthook": "^1.8.4",
     "tsx": "^4.20.6",
     "typescript": "^5.3.3"
   }

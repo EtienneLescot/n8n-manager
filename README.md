@@ -299,7 +299,18 @@ Use `/home/etienne/repos/n8n-ecosystem-dev` for end-to-end local facade testing.
 
 ```bash
 npm install
+npm run check:deps
+npm run sync:deps
 npm run build
 npm run test
 npm run typecheck
 ```
+
+## Contributors
+
+Internal workspace dependencies are exact-pinned and auto-aligned to the current local package versions.
+
+- `npm run sync:deps` rewrites stale internal workspace dependency specs locally.
+- `npm run check:deps` is the CI-safe validation command and fails when a workspace manifest is out of sync.
+- The pre-commit hook runs dependency sync and stages only the manifest updates it makes.
+- Release automation may patch-bump dependent packages solely to publish updated internal dependency pins.

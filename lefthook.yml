@@ -1,0 +1,4 @@
+pre-commit:
+  commands:
+    sync-dependencies:
+      run: node scripts/sync-dependencies.mjs --write --stage

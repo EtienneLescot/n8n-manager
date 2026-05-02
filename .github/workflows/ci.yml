@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Check internal dependency alignment
+        run: npm run check:deps
+
       - name: Build all packages
         run: npm run build
 
