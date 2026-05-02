@@ -184,6 +184,19 @@ jobs:
             return `${major}.${minor}.${patch}`;
           }
 
+          function compareVersions(left, right) {
+            const leftParts = Object.values(parse(left));
+            const rightParts = Object.values(parse(right));
+
+            for (let index = 0; index < leftParts.length; index += 1) {
+              if (leftParts[index] !== rightParts[index]) {
+                return leftParts[index] - rightParts[index];
+              }
+            }
+
+            return 0;
+          }
+
           function bump(version, level) {
             const next = parse(version);
             if (level === 'major') {
@@ -204,7 +217,10 @@ jobs:
             'packages/credentials-manager',
             'packages/cli',
           ];
-          const currentVersion = JSON.parse(fs.readFileSync('packages/cli/package.json', 'utf8')).version;
+          const currentVersion = packages
+            .map((dir) => JSON.parse(fs.readFileSync(`${dir}/package.json`, 'utf8')).version)
+            .sort(compareVersions)
+            .at(-1);
 
           let range = '';
           try {
