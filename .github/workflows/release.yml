@@ -249,7 +249,7 @@ jobs:
 
       - name: Refresh lockfile
         if: steps.next-version.outputs.changed == 'true'
-        run: npm install --package-lock-only
+        run: npm install --package-lock-only --ignore-scripts
 
       - name: Upload next package metadata
         if: steps.next-version.outputs.changed == 'true'
