@@ -1,5 +1,5 @@
 {
   "packages/cli": "0.3.1",
-  "packages/core": "0.5.0",
+  "packages/core": "0.5.1",
   "packages/credentials-manager": "0.1.2"
 }

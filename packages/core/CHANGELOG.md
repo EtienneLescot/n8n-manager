@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.5.0...@n8n-as-code/n8n-manager-core-v0.5.1) (2026-05-02)
+
+
+### Bug Fixes
+
+* **core:** refresh stale auth bridge URLs and improve log isolation ([0e075af](https://github.com/EtienneLescot/n8n-manager/commit/0e075af21136e20c2f6417b6e4f6e1c0e39762fa))
+
 ## [0.5.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.4.1...@n8n-as-code/n8n-manager-core-v0.5.0) (2026-04-30)
 
 
