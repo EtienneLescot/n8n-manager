@@ -289,14 +289,22 @@ export function getLocalN8nAuthBridgeStatus(): LocalOpenBridgeStatus {
 }
 
 export async function getManagedN8nAuthBridgeOpenUrl(instance: GlobalN8nInstance, targetUrlOverride?: string): Promise<string | undefined> {
-  const status = getLocalN8nAuthBridgeStatus();
-  const bridgePublicUrl = status.publicUrl;
   const targetUrl = targetUrlOverride ?? instance.tunnelPublicUrl ?? instance.baseUrl;
-  if (!bridgePublicUrl || !targetUrl) {
+  if (!targetUrl) {
     return undefined;
   }
   const credentials = await resolveManagedN8nOwnerCredentialsForInstance(instance);
   if (!credentials) {
+    return undefined;
+  }
+  let bridge: LocalOpenBridgeState;
+  try {
+    bridge = await ensureLocalN8nAuthBridgeRunning({ publicTunnel: true });
+  } catch {
+    return undefined;
+  }
+  const bridgePublicUrl = bridge.publicUrl;
+  if (!bridgePublicUrl) {
     return undefined;
   }
   return buildLocalWorkflowOpenBridgeUrl(targetUrl, bridgePublicUrl);
@@ -780,7 +788,7 @@ async function ensureLocalOpenBridgePublicTunnel(state: LocalOpenBridgeState): P
 
 async function startCloudflaredTunnel(targetUrl: string): Promise<{ publicUrl: string; pid: number }> {
   const bin = await installCloudflaredIfNeeded();
-  const logFile = path.join(resolveN8nManagerHome(), 'logs', 'auth-bridge-cloudflared.log');
+  const logFile = path.join(resolveN8nManagerHome(), 'logs', `auth-bridge-cloudflared-${Date.now()}-${process.pid}.log`);
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const child = spawn(bin, ['tunnel', '--url', targetUrl, '--no-autoupdate', '--logfile', logFile], {
     detached: true,
