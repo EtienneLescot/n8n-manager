@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-credentials-manager-v0.1.2...@n8n-as-code/n8n-credentials-manager-v0.1.3) (2026-05-02)
+
+
+### Bug Fixes
+
+* **release:** trigger release PR ([e615db9](https://github.com/EtienneLescot/n8n-manager/commit/e615db9321af0031f4842b181607f1516c880558))
+
 ## [0.1.2](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-credentials-manager-v0.1.1...@n8n-as-code/n8n-credentials-manager-v0.1.2) (2026-04-30)
 
 

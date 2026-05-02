@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.5.1...@n8n-as-code/n8n-manager-core-v0.5.2) (2026-05-02)
+
+
+### Bug Fixes
+
+* **release:** trigger release PR ([e615db9](https://github.com/EtienneLescot/n8n-manager/commit/e615db9321af0031f4842b181607f1516c880558))
+
 ## [0.5.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.5.0...@n8n-as-code/n8n-manager-core-v0.5.1) (2026-05-02)
 
 
