@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import https from 'node:https';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -13,6 +12,8 @@ import {
   resolveN8nManagerHome,
   type GlobalN8nInstance,
 } from './configuration-service.js';
+import { withFileLock } from './file-lock.js';
+import { startDetachedProcess } from './process-utils.js';
 
 const LOCAL_BRIDGE_HOST = '127.0.0.1';
 const DEFAULT_LOCAL_BRIDGE_PORT = 3791;
@@ -254,6 +255,10 @@ export async function resolveWorkflowOpenLink(
 }
 
 export async function ensureLocalN8nAuthBridgeRunning(input: { publicTunnel?: boolean } = {}): Promise<LocalOpenBridgeState> {
+  return withFileLock(getLocalOpenBridgeLockPath(), () => ensureLocalN8nAuthBridgeRunningUnlocked(input));
+}
+
+async function ensureLocalN8nAuthBridgeRunningUnlocked(input: { publicTunnel?: boolean } = {}): Promise<LocalOpenBridgeState> {
   const existing = getActiveLocalOpenBridgeState();
   if (existing) {
     if (await isLocalOpenBridgeHealthy(existing.port)) {
@@ -263,19 +268,20 @@ export async function ensureLocalN8nAuthBridgeRunning(input: { publicTunnel?: bo
     await discardLocalOpenBridgeState(existing);
   }
 
-  spawnLocalOpenBridgeProcess();
+  await spawnLocalOpenBridgeProcess();
   const state = await waitForLocalOpenBridgeState(LOCAL_BRIDGE_START_TIMEOUT_MS);
   return input.publicTunnel ? ensureLocalOpenBridgePublicTunnel(state) : state;
 }
 
 export function getLocalN8nAuthBridgeStatus(): LocalOpenBridgeStatus {
-  const state = getActiveLocalOpenBridgeState();
-  const tunnelRunning = Boolean(state?.tunnelPid && isPidAlive(state.tunnelPid));
+  const state = readLocalOpenBridgeState();
+  const running = Boolean(state?.pid && isPidAlive(state.pid));
+  const tunnelRunning = Boolean(running && state?.tunnelPid && isPidAlive(state.tunnelPid));
   return {
-    running: Boolean(state),
+    running,
     port: state?.port,
     pid: state?.pid,
-    url: state ? `http://${LOCAL_BRIDGE_HOST}:${state.port}` : undefined,
+    url: running && state ? `http://${LOCAL_BRIDGE_HOST}:${state.port}` : undefined,
     publicUrl: tunnelRunning ? state?.publicUrl : undefined,
     tunnelTargetUrl: tunnelRunning ? state?.tunnelTargetUrl : undefined,
     tunnelPid: tunnelRunning ? state?.tunnelPid : undefined,
@@ -736,6 +742,10 @@ function ensureTrailingSlash(value: string): string {
 }
 
 async function ensureLocalOpenBridgePublicTunnel(state: LocalOpenBridgeState): Promise<LocalOpenBridgeState> {
+  return withFileLock(getLocalOpenBridgeTunnelLockPath(), () => ensureLocalOpenBridgePublicTunnelUnlocked(state));
+}
+
+async function ensureLocalOpenBridgePublicTunnelUnlocked(state: LocalOpenBridgeState): Promise<LocalOpenBridgeState> {
   const targetUrl = `http://${LOCAL_BRIDGE_HOST}:${state.port}`;
   if (
     state.publicUrl
@@ -743,10 +753,7 @@ async function ensureLocalOpenBridgePublicTunnel(state: LocalOpenBridgeState): P
     && state.tunnelPid
     && isPidAlive(state.tunnelPid)
   ) {
-    if (await isPublicTunnelReady(`${state.publicUrl.replace(/\/+$/, '')}/health`)) {
-      return state;
-    }
-    await terminateProcess(state.tunnelPid);
+    return state;
   }
 
   if (state.tunnelNextRetryAt && Date.parse(state.tunnelNextRetryAt) > Date.now()) {
@@ -790,24 +797,15 @@ async function startCloudflaredTunnel(targetUrl: string): Promise<{ publicUrl: s
   const bin = await installCloudflaredIfNeeded();
   const logFile = path.join(resolveN8nManagerHome(), 'logs', `auth-bridge-cloudflared-${Date.now()}-${process.pid}.log`);
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
-  const child = spawn(bin, ['tunnel', '--url', targetUrl, '--no-autoupdate', '--logfile', logFile], {
-    detached: true,
-    stdio: 'ignore',
-  });
-
-  if (!child.pid) {
-    throw new Error('cloudflared failed to start for n8n auth bridge.');
-  }
-
-  child.unref();
+  const pid = await startDetachedProcess(bin, ['tunnel', '--url', targetUrl, '--no-autoupdate', '--logfile', logFile]);
   try {
-    const publicUrl = await waitForTunnelPublicUrl(child.pid, logFile);
-    return { publicUrl, pid: child.pid };
-    } catch (error) {
-      await terminateProcess(child.pid);
-      throw error;
-    }
+    const publicUrl = await waitForTunnelPublicUrl(pid, logFile);
+    return { publicUrl, pid };
+  } catch (error) {
+    await terminateProcess(pid);
+    throw error;
   }
+}
 
 function buildLocalWorkflowOpenBridgeUrl(target: string, publicBridgeUrl?: string): string {
   const token = registerWorkflowOpenTarget(target);
@@ -843,18 +841,12 @@ function writePersistedTargets(targets: Record<string, string>): void {
   fs.writeFileSync(getBridgeTargetsPath(), JSON.stringify(targets, null, 2), { mode: 0o600 });
 }
 
-function spawnLocalOpenBridgeProcess(): void {
+async function spawnLocalOpenBridgeProcess(): Promise<void> {
   const logDir = path.join(resolveN8nManagerHome(), 'logs');
   fs.mkdirSync(logDir, { recursive: true });
-  const logFd = fs.openSync(path.join(logDir, 'local-open-bridge.log'), 'a');
+  const logFile = path.join(logDir, 'local-open-bridge.log');
   const entrypoint = resolveLocalOpenBridgeEntrypoint();
-  const child = spawn(process.execPath, entrypoint.args, {
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
-    env: process.env,
-  });
-  child.unref();
-  fs.closeSync(logFd);
+  await startDetachedProcess(process.execPath, entrypoint.args, { outputFile: logFile });
 }
 
 function resolveLocalOpenBridgeEntrypoint(): { args: string[] } {
@@ -954,6 +946,14 @@ function clearLocalOpenBridgeState(): void {
 
 function getLocalOpenBridgeStatePath(): string {
   return path.join(resolveN8nManagerHome(), 'local-open-bridge.json');
+}
+
+function getLocalOpenBridgeLockPath(): string {
+  return path.join(resolveN8nManagerHome(), 'local-open-bridge.lock');
+}
+
+function getLocalOpenBridgeTunnelLockPath(): string {
+  return path.join(resolveN8nManagerHome(), 'local-open-bridge-public-tunnel.lock');
 }
 
 function getOpenLinksDir(): string {
@@ -1075,20 +1075,6 @@ function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {
       }
     }, 500);
   });
-}
-
-async function isPublicTunnelReady(publicUrl: string): Promise<boolean> {
-  try {
-    const response = await fetch(publicUrl, { redirect: 'manual' });
-    const body = await response.text().catch(() => '');
-    return response.status !== 530 && !isCloudflareTunnelError(body);
-  } catch {
-    return false;
-  }
-}
-
-function isCloudflareTunnelError(body: string): boolean {
-  return /error\s*1033/i.test(body) || /cloudflare tunnel error/i.test(body);
 }
 
 function formatCloudflaredLog(logFile: string): string {

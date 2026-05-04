@@ -8,6 +8,7 @@ import {
   N8nConfigurationService,
   N8nRuntimeOrchestrator,
   createManagedLocalLifecycleManager,
+  ensureLocalN8nAuthBridgeRunning,
   readFileBackedN8nInstance,
   type FileBackedN8nLifecycleManagerOptions,
 } from './index.js';
@@ -379,7 +380,9 @@ test('runtime orchestrator reuses a live tunnel process for the same target', as
     const runtime = new N8nRuntimeOrchestrator({
       configuration: service,
       runner: createDockerRunner(dockerState),
-      fetch: (async () => new Response('<html>n8n</html>', { status: 200 })) as typeof fetch,
+      fetch: (async () => {
+        throw new Error('existing live tunnel should not be readiness-probed during ensure');
+      }) as typeof fetch,
       waitForReady: false,
     });
 
@@ -390,6 +393,93 @@ test('runtime orchestrator reuses a live tunnel process for the same target', as
     assert.equal(status.authBridgeTunnel?.running, true);
     assert.equal(status.authBridgeTunnel?.publicUrl, 'https://auth-bridge.trycloudflare.com');
     assert.ok(!dockerState.commands.some((command) => command.startsWith('docker rm -f tunnel-managed')));
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.N8N_MANAGER_HOME;
+    } else {
+      process.env.N8N_MANAGER_HOME = previousHome;
+    }
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test('runtime status observes stale tunnel state without clearing stored URL', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-runtime-'));
+  const service = new N8nConfigurationService({ baseDir: dir });
+  const statePath = service.getRuntimeStatePath('stale-tunnel-managed');
+  const stalePid = 99_999_999;
+  service.upsertInstance({
+    id: 'stale-tunnel-managed',
+    name: 'Stale Tunnel Managed',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5693',
+    runtimeStatePath: statePath,
+    apiKey: 'n8n_api_managed',
+    tunnelPublicUrl: 'https://stale.trycloudflare.com',
+    tunnelTargetUrl: 'http://127.0.0.1:5693',
+    tunnelPid: stalePid,
+    metadata: {
+      containerName: 'stale-tunnel-managed',
+      volumeName: 'stale-tunnel-managed-data',
+    },
+  });
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify({
+    id: 'stale-tunnel-managed',
+    mode: 'managed-local-docker',
+    baseUrl: 'http://127.0.0.1:5693',
+    provider: 'docker',
+    runtimeStatePath: statePath,
+    containerName: 'stale-tunnel-managed',
+    volumeName: 'stale-tunnel-managed-data',
+    apiKey: 'n8n_api_managed',
+    tunnelPublicUrl: 'https://stale.trycloudflare.com',
+    tunnelTargetUrl: 'http://127.0.0.1:5693',
+    tunnelPid: stalePid,
+  }, null, 2));
+
+  const runtime = new N8nRuntimeOrchestrator({
+    configuration: service,
+    runner: createDockerRunner({ exists: true, running: true, commands: [] }),
+    waitForReady: false,
+  });
+
+  const status = await runtime.getRuntimeStatus('stale-tunnel-managed');
+
+  assert.equal(status.tunnel?.running, false);
+  assert.equal(status.tunnel?.publicUrl, 'https://stale.trycloudflare.com');
+  assert.equal(service.getInstance('stale-tunnel-managed')?.tunnelPublicUrl, 'https://stale.trycloudflare.com');
+  assert.equal(service.getInstance('stale-tunnel-managed')?.tunnelPid, stalePid);
+  assert.equal((await readFileBackedN8nInstance(statePath))?.tunnelPid, stalePid);
+});
+
+test('auth bridge reuses live public tunnel without readiness replacement', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-bridge-'));
+  const previousHome = process.env.N8N_MANAGER_HOME;
+  const previousFetch = globalThis.fetch;
+  process.env.N8N_MANAGER_HOME = dir;
+  await fs.writeFile(path.join(dir, 'local-open-bridge.json'), JSON.stringify({
+    port: 3791,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    publicUrl: 'https://auth-bridge.trycloudflare.com',
+    tunnelTargetUrl: 'http://127.0.0.1:3791',
+    tunnelPid: process.pid,
+  }, null, 2));
+
+  try {
+    globalThis.fetch = (async (input) => {
+      const url = input.toString();
+      if (url === 'http://127.0.0.1:3791/health') {
+        return new Response('OK', { status: 200 });
+      }
+      throw new Error(`unexpected public tunnel readiness probe: ${url}`);
+    }) as typeof fetch;
+
+    const state = await ensureLocalN8nAuthBridgeRunning({ publicTunnel: true });
+
+    assert.equal(state.publicUrl, 'https://auth-bridge.trycloudflare.com');
+    assert.equal(state.tunnelPid, process.pid);
   } finally {
     if (previousHome === undefined) {
       delete process.env.N8N_MANAGER_HOME;

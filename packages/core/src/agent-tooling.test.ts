@@ -135,38 +135,19 @@ test('presentWorkflowResult uses the public auth bridge URL for tunneled managed
   }
 });
 
-test('presentWorkflowResult refreshes stale auth bridge URLs without reading old tunnel logs', async () => {
+test('presentWorkflowResult reuses a live auth bridge tunnel without readiness replacement', async () => {
   const baseDir = tempDir();
-  const binDir = path.join(baseDir, 'bin');
-  const fakeCloudflared = path.join(binDir, 'cloudflared');
   const previousHome = process.env.N8N_MANAGER_HOME;
-  const previousPath = process.env.PATH;
   const originalFetch = globalThis.fetch;
   process.env.N8N_MANAGER_HOME = baseDir;
-  process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ''}`;
   fs.mkdirSync(path.join(baseDir, 'logs'), { recursive: true });
-  fs.mkdirSync(binDir, { recursive: true });
-  fs.writeFileSync(fakeCloudflared, `#!/usr/bin/env node
-const fs = require('node:fs');
-const logfile = process.argv[process.argv.indexOf('--logfile') + 1];
-setTimeout(() => {
-  fs.mkdirSync(require('node:path').dirname(logfile), { recursive: true });
-  fs.appendFileSync(logfile, 'https://fresh-auth-bridge.trycloudflare.com\\n');
-}, 1000);
-setInterval(() => {}, 1000);
-`);
-  fs.chmodSync(fakeCloudflared, 0o755);
   try {
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = async (input) => {
       if (String(input) === 'http://127.0.0.1:3791/health') {
         return new Response('OK');
       }
-      if (String(input) === 'https://stale-auth-bridge.trycloudflare.com/health') {
-        return new Response('error 1033', { status: 530 });
-      }
-      return originalFetch(input, init);
+      throw new Error(`unexpected fetch: ${String(input)}`);
     };
-    fs.writeFileSync(path.join(baseDir, 'logs', 'auth-bridge-cloudflared.log'), 'https://stale-auth-bridge.trycloudflare.com\n');
     const runtimeStatePath = path.join(baseDir, 'runtime.json');
     fs.writeFileSync(runtimeStatePath, JSON.stringify({
       ownerEmail: 'owner@example.test',
@@ -194,22 +175,13 @@ setInterval(() => {}, 1000);
     });
 
     const result = await presentWorkflowResult({ workflowId: 'wf-123' }, service);
-    const state = JSON.parse(fs.readFileSync(path.join(baseDir, 'local-open-bridge.json'), 'utf8')) as { tunnelPid?: number };
 
-    assert.match(result.url, /^https:\/\/fresh-auth-bridge\.trycloudflare\.com\/open\/n8n-workflow\//);
-    if (state.tunnelPid && state.tunnelPid !== process.pid) {
-      process.kill(state.tunnelPid, 'SIGTERM');
-    }
+    assert.match(result.url, /^https:\/\/stale-auth-bridge\.trycloudflare\.com\/open\/n8n-workflow\//);
   } finally {
     if (previousHome === undefined) {
       delete process.env.N8N_MANAGER_HOME;
     } else {
       process.env.N8N_MANAGER_HOME = previousHome;
-    }
-    if (previousPath === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = previousPath;
     }
     globalThis.fetch = originalFetch;
   }

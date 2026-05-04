@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
-import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fssync from 'node:fs';
 import https from 'node:https';
@@ -20,6 +19,8 @@ import {
   getLocalN8nAuthBridgeStatus,
   stopLocalN8nAuthBridgePublicTunnel,
 } from './agent-tooling.js';
+import { withFileLock } from './file-lock.js';
+import { startDetachedProcess } from './process-utils.js';
 
 export * from './configuration-service.js';
 export * from './agent-tooling.js';
@@ -347,7 +348,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       } else {
         tunnelLastAttemptAt = new Date().toISOString();
         try {
-          tunnel = await this.ensureTunnel(baseUrl, 'ensure', existingState);
+                    tunnel = await this.withTunnelLock(() => this.ensureTunnel(baseUrl, 'ensure', existingState));
         } catch (error) {
           tunnelLastError = formatCommandError(error);
           tunnelNextRetryAt = new Date(Date.now() + TUNNEL_RETRY_COOLDOWN_MS).toISOString();
@@ -470,7 +471,7 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
 
     const instance = await this.readInstance();
     if (instance?.mode === 'managed-local-docker') {
-      await this.stopTunnel(instance, 'lifecycle.delete');
+      await this.withTunnelLock(() => this.stopTunnel(instance, 'lifecycle.delete'));
       const containerName = instance.containerName ?? this.containerName;
       await this.removeDockerContainer(containerName);
       if (input.destroyData) {
@@ -493,6 +494,10 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
   }
 
   async ensurePublicTunnel(input: { action?: N8nTunnelAction; targetUrl?: string } = {}): Promise<N8nTunnelSnapshot> {
+    return this.withTunnelLock(() => this.ensurePublicTunnelUnlocked(input));
+  }
+
+  private async ensurePublicTunnelUnlocked(input: { action?: N8nTunnelAction; targetUrl?: string } = {}): Promise<N8nTunnelSnapshot> {
     const instance = await this.readInstance();
     if (!instance || instance.mode !== 'managed-local-docker') {
       return { enabled: false, running: false };
@@ -551,6 +556,10 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
   }
 
   async stopPublicTunnel(input: { disable?: boolean } = {}): Promise<N8nTunnelSnapshot> {
+    return this.withTunnelLock(() => this.stopPublicTunnelUnlocked(input));
+  }
+
+  private async stopPublicTunnelUnlocked(input: { disable?: boolean } = {}): Promise<N8nTunnelSnapshot> {
     const instance = await this.readInstance();
     if (!instance) {
       return { enabled: false, running: false };
@@ -585,12 +594,6 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       };
     }
     const running = Boolean(instance.tunnelPid && isPidAlive(instance.tunnelPid));
-    if (!running) {
-      await this.writeInstance({
-        ...instance,
-        tunnelPid: undefined,
-      });
-    }
     return {
       enabled: true,
       running,
@@ -1123,14 +1126,11 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
       && existingState.tunnelTargetUrl === targetUrl
       && isPidAlive(existingState.tunnelPid)
     ) {
-      if (await isPublicTunnelReady(existingState.tunnelPublicUrl, this.fetcher)) {
-        return {
-          publicUrl: existingState.tunnelPublicUrl,
-          targetUrl,
-          pid: existingState.tunnelPid,
-        };
-      }
-      await this.stopTunnel(existingState, 'lifecycle.ensureTunnel.replace-unhealthy');
+      return {
+        publicUrl: existingState.tunnelPublicUrl,
+        targetUrl,
+        pid: existingState.tunnelPid,
+      };
     }
 
     if (existingState?.tunnelPid && isPidAlive(existingState.tunnelPid)) {
@@ -1140,23 +1140,18 @@ export class FileBackedN8nLifecycleManager implements N8nLifecycleManager {
     const bin = await installCloudflaredIfNeeded(this.cloudflaredBin);
     const logFile = path.join(path.dirname(this.statePath), `${this.instanceId}-cloudflared-${Date.now()}.log`);
     await fs.mkdir(path.dirname(logFile), { recursive: true });
-    const child = spawn(bin, ['tunnel', '--url', targetUrl, '--no-autoupdate', '--logfile', logFile], {
-      detached: true,
-      stdio: 'ignore',
-    });
-
-    if (!child.pid) {
-      throw new Error('cloudflared failed to start.');
-    }
-
-    child.unref();
+    const pid = await startDetachedProcess(bin, ['tunnel', '--url', targetUrl, '--no-autoupdate', '--logfile', logFile]);
     try {
-      const publicUrl = await waitForTunnelPublicUrl(child.pid, logFile);
-      return { publicUrl, targetUrl, pid: child.pid };
+      const publicUrl = await waitForTunnelPublicUrl(pid, logFile);
+      return { publicUrl, targetUrl, pid };
     } catch (error) {
-      await terminateProcess(child.pid, `lifecycle.ensureTunnel.failed:${this.instanceId}`);
+      await terminateProcess(pid, `lifecycle.ensureTunnel.failed:${this.instanceId}`);
       throw error;
     }
+  }
+
+  private async withTunnelLock<T>(action: () => Promise<T>): Promise<T> {
+    return withFileLock(path.join(path.dirname(this.statePath), `${this.instanceId}.public-tunnel.lock`), action);
   }
 
   private async stopTunnel(instance: N8nInstanceRef, reason: string): Promise<void> {
@@ -1428,14 +1423,6 @@ export class N8nRuntimeOrchestrator {
     const lifecycle = await this.lifecycleForInstance(instance);
     const health = await lifecycle.status();
     const tunnel = await lifecycle.getPublicTunnelStatus();
-    if (instance.tunnelPublicUrl && !tunnel.running) {
-      this.configuration.upsertInstance({
-        id: instance.id,
-        tunnelPublicUrl: undefined,
-        tunnelTargetUrl: tunnel.targetUrl ?? instance.tunnelTargetUrl ?? instance.baseUrl,
-        tunnelPid: undefined,
-      }, { setActive: false });
-    }
     const blocked = blockedFromHealth(health, instance);
     const authBridgeTunnel = authBridgeTunnelSnapshot();
     const authBridgeTargetUrl = tunnel.running ? tunnel.publicUrl : undefined;
@@ -2252,22 +2239,6 @@ function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {
   });
 }
 
-async function isPublicTunnelReady(publicUrl: string, fetcher: typeof fetch): Promise<boolean> {
-  try {
-    const response = await fetcher(publicUrl, { redirect: 'manual' });
-    if (response.status === 530) {
-      return false;
-    }
-    const body = await safeReadText(response);
-    return !isCloudflareTunnelError(body);
-  } catch {
-    return false;
-  }
-}
-
-function isCloudflareTunnelError(body: string): boolean {
-  return /error\s*1033/i.test(body) || /cloudflare tunnel error/i.test(body);
-}
 
 function formatCloudflaredLog(logFile: string): string {
   try {
