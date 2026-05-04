@@ -37,7 +37,7 @@ async function startDetachedProcessOnUnix(
     '  setsid "$@" > /dev/null 2>&1 < /dev/null &',
     'fi',
     'printf "%s" "$!"',
-  ].join('; ');
+  ].join('\n');
   const result = await execFileAsync('sh', [
     '-c',
     script,

@@ -12,6 +12,7 @@ import {
   readFileBackedN8nInstance,
   type FileBackedN8nLifecycleManagerOptions,
 } from './index.js';
+import { startDetachedProcess } from './process-utils.js';
 
 type DockerState = {
   exists?: boolean;
@@ -490,6 +491,31 @@ test('auth bridge reuses live public tunnel without readiness replacement', asyn
   }
 });
 
+test('detached process launcher starts a Unix process without shell syntax errors', async (t) => {
+  if (process.platform === 'win32') {
+    t.skip('Unix shell launcher is not used on Windows.');
+    return;
+  }
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-detach-'));
+  const markerPath = path.join(dir, 'started.txt');
+  const pid = await startDetachedProcess('sh', ['-c', `printf started > "${markerPath}"; sleep 5`]);
+  assert.ok(pid > 0);
+  try {
+    await waitForFile(markerPath);
+    assert.equal(await fs.readFile(markerPath, 'utf8'), 'started');
+  } finally {
+    try {
+      process.kill(-pid, 'SIGTERM');
+    } catch {
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+});
+
 test('managed-local-docker delete removes the container and can destroy the volume with force', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-lifecycle-'));
   const statePath = path.join(dir, 'instance.json');
@@ -729,3 +755,16 @@ const DEFAULT_TEST_API_KEY_SCOPES = [
   'execution:read',
   'execution:list',
 ];
+
+async function waitForFile(filePath: string): Promise<void> {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    try {
+      await fs.access(filePath);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw new Error(`Timed out waiting for ${filePath}.`);
+}
