@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.4.1...@n8n-as-code/n8n-manager-v0.5.0) (2026-05-04)
+
+
+### Features
+
+* **core:** implement file locking and detached process utilities ([bea4c88](https://github.com/EtienneLescot/n8n-manager/commit/bea4c884f0093c7b072b4f927219f7abda95fd10))
+
+
+### Bug Fixes
+
+* **prerelease:** trigger prerelease ([97f1bed](https://github.com/EtienneLescot/n8n-manager/commit/97f1bed667394f487e7e036733b362989f5e53e8))
+
 ## [0.4.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.4.0...@n8n-as-code/n8n-manager-v0.4.1) (2026-05-02)
 
 
