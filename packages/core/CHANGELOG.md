@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.6.0...@n8n-as-code/n8n-manager-core-v0.6.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* **core:** document detached shell syntax constraint ([94a2162](https://github.com/EtienneLescot/n8n-manager/commit/94a2162a1942568ce5745eced56ffdf931e84db4))
+
 ## [0.6.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.5.2...@n8n-as-code/n8n-manager-core-v0.6.0) (2026-05-04)
 
 
