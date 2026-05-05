@@ -31,10 +31,8 @@ async function startDetachedProcessOnUnix(
     'out_file=$1',
     'err_file=$2',
     'shift 2',
-    'if [ -n "$out_file" ]; then',
-    '  setsid "$@" >> "$out_file" 2>> "${err_file:-$out_file}" < /dev/null &',
-    'else',
-    '  setsid "$@" > /dev/null 2>&1 < /dev/null &',
+    'if [ -n "$out_file" ]; then setsid "$@" >> "$out_file" 2>> "${err_file:-$out_file}" < /dev/null &',
+    'else setsid "$@" > /dev/null 2>&1 < /dev/null &',
     'fi',
     'printf "%s" "$!"',
   ].join('\n');
