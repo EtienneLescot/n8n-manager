@@ -27,6 +27,7 @@ async function startDetachedProcessOnUnix(
 ): Promise<number> {
   const outputFile = options.outputFile ?? '';
   const errorFile = options.errorFile ?? outputFile;
+  // Keep branch commands on the same line so flattened shell scripts stay valid POSIX sh.
   const script = [
     'out_file=$1',
     'err_file=$2',
