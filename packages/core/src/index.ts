@@ -1588,7 +1588,7 @@ export class N8nRuntimeOrchestrator {
     const tunnel = await lifecycle.ensurePublicTunnel({ action: input.action ?? 'ensure' });
     await this.syncPrivateRuntimeState(instance);
     const warnings = tunnel.running
-      ? await this.ensureAuthBridgeTunnelIfNeeded(true)
+      ? await this.ensureAuthBridgeTunnelIfNeeded(true, { refreshPublicTunnel: input.action === 'refresh' })
       : tunnel.lastError
         ? [`Public URL could not be created: ${tunnel.lastError}`]
         : [];
@@ -1614,12 +1614,12 @@ export class N8nRuntimeOrchestrator {
     return this.getRuntimeStatus(instance.id);
   }
 
-  private async ensureAuthBridgeTunnelIfNeeded(enabled: boolean): Promise<string[]> {
+  private async ensureAuthBridgeTunnelIfNeeded(enabled: boolean, input: { refreshPublicTunnel?: boolean } = {}): Promise<string[]> {
     if (!enabled) {
       return [];
     }
     try {
-      await ensureLocalN8nAuthBridgeRunning({ publicTunnel: true });
+      await ensureLocalN8nAuthBridgeRunning({ publicTunnel: true, refreshPublicTunnel: input.refreshPublicTunnel });
       return [];
     } catch (error) {
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);

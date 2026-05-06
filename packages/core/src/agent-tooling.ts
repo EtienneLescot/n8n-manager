@@ -254,23 +254,23 @@ export async function resolveWorkflowOpenLink(
   };
 }
 
-export async function ensureLocalN8nAuthBridgeRunning(input: { publicTunnel?: boolean } = {}): Promise<LocalOpenBridgeState> {
+export async function ensureLocalN8nAuthBridgeRunning(input: { publicTunnel?: boolean; refreshPublicTunnel?: boolean } = {}): Promise<LocalOpenBridgeState> {
   return withFileLock(getLocalOpenBridgeLockPath(), () => ensureLocalN8nAuthBridgeRunningUnlocked(input));
 }
 
-async function ensureLocalN8nAuthBridgeRunningUnlocked(input: { publicTunnel?: boolean } = {}): Promise<LocalOpenBridgeState> {
+async function ensureLocalN8nAuthBridgeRunningUnlocked(input: { publicTunnel?: boolean; refreshPublicTunnel?: boolean } = {}): Promise<LocalOpenBridgeState> {
   const existing = getActiveLocalOpenBridgeState();
   if (existing) {
     if (await isLocalOpenBridgeHealthy(existing.port)) {
       activePort = existing.port;
-      return input.publicTunnel ? ensureLocalOpenBridgePublicTunnel(existing) : existing;
+      return input.publicTunnel ? ensureLocalOpenBridgePublicTunnel(existing, { refresh: input.refreshPublicTunnel }) : existing;
     }
     await discardLocalOpenBridgeState(existing);
   }
 
   await spawnLocalOpenBridgeProcess();
   const state = await waitForLocalOpenBridgeState(LOCAL_BRIDGE_START_TIMEOUT_MS);
-  return input.publicTunnel ? ensureLocalOpenBridgePublicTunnel(state) : state;
+  return input.publicTunnel ? ensureLocalOpenBridgePublicTunnel(state, { refresh: input.refreshPublicTunnel }) : state;
 }
 
 export function getLocalN8nAuthBridgeStatus(): LocalOpenBridgeStatus {
@@ -741,25 +741,23 @@ function ensureTrailingSlash(value: string): string {
   return value.endsWith('/') ? value : `${value}/`;
 }
 
-async function ensureLocalOpenBridgePublicTunnel(state: LocalOpenBridgeState): Promise<LocalOpenBridgeState> {
-  return withFileLock(getLocalOpenBridgeTunnelLockPath(), () => ensureLocalOpenBridgePublicTunnelUnlocked(state));
+async function ensureLocalOpenBridgePublicTunnel(state: LocalOpenBridgeState, input: { refresh?: boolean } = {}): Promise<LocalOpenBridgeState> {
+  return withFileLock(getLocalOpenBridgeTunnelLockPath(), () => ensureLocalOpenBridgePublicTunnelUnlocked(state, input));
 }
 
-async function ensureLocalOpenBridgePublicTunnelUnlocked(state: LocalOpenBridgeState): Promise<LocalOpenBridgeState> {
+async function ensureLocalOpenBridgePublicTunnelUnlocked(state: LocalOpenBridgeState, input: { refresh?: boolean } = {}): Promise<LocalOpenBridgeState> {
   const targetUrl = `http://${LOCAL_BRIDGE_HOST}:${state.port}`;
-  if (
+  const hasReusableTunnel = Boolean(
     state.publicUrl
-    && state.tunnelTargetUrl === targetUrl
-    && state.tunnelPid
-    && isPidAlive(state.tunnelPid)
-  ) {
-    if (await isPublicOpenBridgeHealthy(state.publicUrl)) {
-      return state;
-    }
-    await terminateProcess(state.tunnelPid);
+      && state.tunnelTargetUrl === targetUrl
+      && state.tunnelPid
+      && isPidAlive(state.tunnelPid),
+  );
+  if (hasReusableTunnel && !input.refresh) {
+    return state;
   }
 
-  if (state.tunnelNextRetryAt && Date.parse(state.tunnelNextRetryAt) > Date.now()) {
+  if (!input.refresh && state.tunnelNextRetryAt && Date.parse(state.tunnelNextRetryAt) > Date.now()) {
     throw new Error(`Cloudflare tunnel creation is temporarily paused until ${state.tunnelNextRetryAt}.${state.tunnelLastError ? ` Last error: ${state.tunnelLastError}` : ''}`);
   }
 
@@ -912,21 +910,6 @@ async function isLocalOpenBridgeHealthy(port: number): Promise<boolean> {
     return response.ok && (await response.text()).trim() === 'OK';
   } catch {
     return false;
-  }
-}
-
-async function isPublicOpenBridgeHealthy(publicUrl: string): Promise<boolean> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
-  try {
-    const response = await fetch(`${publicUrl.replace(/\/+$/, '')}/health`, {
-      signal: controller.signal,
-    });
-    return response.ok && (await response.text()).trim() === 'OK';
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

@@ -85,10 +85,7 @@ test('presentWorkflowResult uses the public auth bridge URL for tunneled managed
   try {
     globalThis.fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-      if (
-        url === 'http://127.0.0.1:3791/health'
-        || url === 'https://auth-bridge.trycloudflare.com/health'
-      ) {
+      if (url === 'http://127.0.0.1:3791/health') {
         return new Response('OK');
       }
       return originalFetch(input, init);
@@ -145,10 +142,7 @@ test('presentWorkflowResult reuses a live auth bridge tunnel without readiness r
   try {
     globalThis.fetch = async (input) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-      if (
-        url === 'http://127.0.0.1:3791/health'
-        || url === 'https://stale-auth-bridge.trycloudflare.com/health'
-      ) {
+      if (url === 'http://127.0.0.1:3791/health') {
         return new Response('OK');
       }
       throw new Error(`unexpected fetch: ${url}`);

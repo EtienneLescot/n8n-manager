@@ -370,13 +370,7 @@ test('runtime orchestrator reuses a live tunnel process for the same target', as
   try {
     globalThis.fetch = (async (input) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-      if (
-        url === 'http://127.0.0.1:3791/health'
-        || url === 'https://auth-bridge.trycloudflare.com/health'
-      ) {
-        return new Response('OK', { status: 200 });
-      }
-      if (url === 'https://auth-bridge.trycloudflare.com/health') {
+      if (url === 'http://127.0.0.1:3791/health') {
         return new Response('OK', { status: 200 });
       }
       return new Response('<html>n8n</html>', { status: 200 });
@@ -474,13 +468,10 @@ test('auth bridge reuses live public tunnel without readiness replacement', asyn
   try {
     globalThis.fetch = (async (input) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-      if (
-        url === 'http://127.0.0.1:3791/health'
-        || url === 'https://auth-bridge.trycloudflare.com/health'
-      ) {
+      if (url === 'http://127.0.0.1:3791/health') {
         return new Response('OK', { status: 200 });
       }
-      throw new Error(`unexpected public tunnel readiness probe: ${url}`);
+      throw new Error(`unexpected auth bridge fetch: ${url}`);
     }) as typeof fetch;
 
     const state = await ensureLocalN8nAuthBridgeRunning({ publicTunnel: true });
