@@ -753,7 +753,10 @@ async function ensureLocalOpenBridgePublicTunnelUnlocked(state: LocalOpenBridgeS
     && state.tunnelPid
     && isPidAlive(state.tunnelPid)
   ) {
-    return state;
+    if (await isPublicOpenBridgeHealthy(state.publicUrl)) {
+      return state;
+    }
+    await terminateProcess(state.tunnelPid);
   }
 
   if (state.tunnelNextRetryAt && Date.parse(state.tunnelNextRetryAt) > Date.now()) {
@@ -909,6 +912,21 @@ async function isLocalOpenBridgeHealthy(port: number): Promise<boolean> {
     return response.ok && (await response.text()).trim() === 'OK';
   } catch {
     return false;
+  }
+}
+
+async function isPublicOpenBridgeHealthy(publicUrl: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(`${publicUrl.replace(/\/+$/, '')}/health`, {
+      signal: controller.signal,
+    });
+    return response.ok && (await response.text()).trim() === 'OK';
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 

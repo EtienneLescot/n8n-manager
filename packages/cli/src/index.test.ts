@@ -56,9 +56,10 @@ test('CLI manages global instances and sync folder', async () => {
     assert.equal(added.code, 0);
     assert.equal(JSON.parse(added.stdout).instance.id, 'prod');
 
-    const sync = await captureStdout(() => runCli(['config', 'set-sync-folder', '/tmp/n8n-workflows']));
+    const syncFolder = path.resolve('/tmp/n8n-workflows');
+    const sync = await captureStdout(() => runCli(['config', 'set-sync-folder', syncFolder]));
     assert.equal(sync.code, 0);
-    assert.equal(JSON.parse(sync.stdout).defaultSyncFolder, '/tmp/n8n-workflows');
+    assert.equal(JSON.parse(sync.stdout).defaultSyncFolder, syncFolder);
 
     const listed = await captureStdout(() => runCli(['instances', 'list']));
     const config = JSON.parse(listed.stdout);

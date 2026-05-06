@@ -84,9 +84,10 @@ test('presentWorkflowResult uses the public auth bridge URL for tunneled managed
   process.env.N8N_MANAGER_HOME = baseDir;
   try {
     globalThis.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       if (
-        String(input) === 'http://127.0.0.1:3791/health'
-        || String(input) === 'https://auth-bridge.trycloudflare.com/health'
+        url === 'http://127.0.0.1:3791/health'
+        || url === 'https://auth-bridge.trycloudflare.com/health'
       ) {
         return new Response('OK');
       }
@@ -143,10 +144,14 @@ test('presentWorkflowResult reuses a live auth bridge tunnel without readiness r
   fs.mkdirSync(path.join(baseDir, 'logs'), { recursive: true });
   try {
     globalThis.fetch = async (input) => {
-      if (String(input) === 'http://127.0.0.1:3791/health') {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (
+        url === 'http://127.0.0.1:3791/health'
+        || url === 'https://stale-auth-bridge.trycloudflare.com/health'
+      ) {
         return new Response('OK');
       }
-      throw new Error(`unexpected fetch: ${String(input)}`);
+      throw new Error(`unexpected fetch: ${url}`);
     };
     const runtimeStatePath = path.join(baseDir, 'runtime.json');
     fs.writeFileSync(runtimeStatePath, JSON.stringify({

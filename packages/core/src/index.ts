@@ -1747,10 +1747,15 @@ function authBridgeTunnelSnapshot(): N8nTunnelSnapshot {
   });
 }
 
-function shouldSkipTunnelAttempt(instance: Pick<N8nInstanceRef, 'tunnelNextRetryAt'>, action: N8nTunnelAction): boolean {
+function shouldSkipTunnelAttempt(instance: Pick<N8nInstanceRef, 'tunnelLastError' | 'tunnelNextRetryAt'>, action: N8nTunnelAction): boolean {
   if (action === 'refresh') return false;
   if (!instance.tunnelNextRetryAt) return false;
+  if (isLegacyWindowsPowerShellTunnelError(instance.tunnelLastError)) return false;
   return Date.parse(instance.tunnelNextRetryAt) > Date.now();
+}
+
+function isLegacyWindowsPowerShellTunnelError(error: string | undefined): boolean {
+  return Boolean(error?.includes('Start-Process @parameters') && error.includes('FullyQualifiedErrorId : UnexpectedToken'));
 }
 
 function buildAccessTargetUrl(baseUrl: string, targetPath?: string): string {

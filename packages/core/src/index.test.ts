@@ -369,8 +369,11 @@ test('runtime orchestrator reuses a live tunnel process for the same target', as
 
   try {
     globalThis.fetch = (async (input) => {
-      const url = input.toString();
-      if (url === 'http://127.0.0.1:3791/health') {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (
+        url === 'http://127.0.0.1:3791/health'
+        || url === 'https://auth-bridge.trycloudflare.com/health'
+      ) {
         return new Response('OK', { status: 200 });
       }
       if (url === 'https://auth-bridge.trycloudflare.com/health') {
@@ -470,8 +473,11 @@ test('auth bridge reuses live public tunnel without readiness replacement', asyn
 
   try {
     globalThis.fetch = (async (input) => {
-      const url = input.toString();
-      if (url === 'http://127.0.0.1:3791/health') {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (
+        url === 'http://127.0.0.1:3791/health'
+        || url === 'https://auth-bridge.trycloudflare.com/health'
+      ) {
         return new Response('OK', { status: 200 });
       }
       throw new Error(`unexpected public tunnel readiness probe: ${url}`);
@@ -512,6 +518,28 @@ test('detached process launcher starts a Unix process without shell syntax error
       } catch {
         // Already gone.
       }
+    }
+  }
+});
+
+test('detached process launcher starts a Windows process without PowerShell parsing', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Windows detached launcher is only used on Windows.');
+    return;
+  }
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'n8n-manager-detach-'));
+  const markerPath = path.join(dir, 'started.txt');
+  const script = "require('node:fs').writeFileSync(process.argv[1], 'started'); setTimeout(() => {}, 5000);";
+  const pid = await startDetachedProcess(process.execPath, ['-e', script, markerPath]);
+  assert.ok(pid > 0);
+  try {
+    await waitForFile(markerPath);
+    assert.equal(await fs.readFile(markerPath, 'utf8'), 'started');
+  } finally {
+    try {
+      process.kill(pid);
+    } catch {
+      // Already gone.
     }
   }
 });

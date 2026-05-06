@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process';
-import path from 'node:path';
+import { execFile, spawn } from 'node:child_process';
+import fs from 'node:fs';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -54,42 +54,45 @@ async function startDetachedProcessOnWindows(
   args: string[],
   options: StartDetachedProcessOptions,
 ): Promise<number> {
-  const outputFile = options.outputFile ?? '';
-  const errorFile = options.errorFile ?? (outputFile ? `${outputFile}.err` : '');
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    '$outFile = $args[0]',
-    '$errFile = $args[1]',
-    '$file = $args[2]',
-    '$argumentList = @()',
-    'if ($args.Count -gt 3) { $argumentList = $args[3..($args.Count - 1)] }',
-    "$parameters = @{ FilePath = $file; ArgumentList = $argumentList; PassThru = $true; WindowStyle = 'Hidden' }",
-    "if ($outFile) { $parameters['RedirectStandardOutput'] = $outFile }",
-    "if ($errFile) { $parameters['RedirectStandardError'] = $errFile }",
-    '$process = Start-Process @parameters',
-    '[Console]::Out.Write($process.Id)',
-  ].join('; ');
-  const result = await execFileAsync(resolvePowerShellBinary(), [
-    '-NoProfile',
-    '-NonInteractive',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-Command',
-    script,
-    outputFile,
-    errorFile,
-    command,
-    ...args,
-  ], { encoding: 'utf8' });
-  return parseDetachedPid(result.stdout, command);
+  const outputFile = options.outputFile;
+  const errorFile = options.errorFile ?? (outputFile ? `${outputFile}.err` : undefined);
+  const stdout = outputFile ? fs.openSync(outputFile, 'a') : 'ignore';
+  const stderr = errorFile ? fs.openSync(errorFile, 'a') : 'ignore';
+
+  try {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: ['ignore', stdout, stderr],
+      windowsHide: true,
+    });
+    await waitForWindowsDetachedSpawn(child, command);
+    child.unref();
+    return parseDetachedPid(String(child.pid ?? ''), command);
+  } finally {
+    if (typeof stdout === 'number') fs.closeSync(stdout);
+    if (typeof stderr === 'number' && stderr !== stdout) fs.closeSync(stderr);
+  }
 }
 
-function resolvePowerShellBinary(): string {
-  const systemRoot = process.env.SystemRoot?.trim();
-  if (systemRoot) {
-    return path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  }
-  return 'powershell.exe';
+function waitForWindowsDetachedSpawn(child: ReturnType<typeof spawn>, command: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      child.off('error', onError);
+      child.off('spawn', onSpawn);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onSpawn = () => {
+      cleanup();
+      resolve();
+    };
+    child.once('error', onError);
+    child.once('spawn', onSpawn);
+  }).catch((error) => {
+    throw error instanceof Error ? error : new Error(`Failed to launch detached process: ${command}`);
+  });
 }
 
 function parseDetachedPid(stdout: string | Buffer | undefined, command: string): number {
