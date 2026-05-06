@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.6.1...@n8n-as-code/n8n-manager-v0.6.2) (2026-05-06)
+
+
+### Bug Fixes
+
+* Internal dependency alignment only.
+
 ## [0.6.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.6.0...@n8n-as-code/n8n-manager-v0.6.1) (2026-05-06)
 
 
