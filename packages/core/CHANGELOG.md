@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.6.2...@n8n-as-code/n8n-manager-core-v0.7.0) (2026-05-06)
+
+
+### Features
+
+* **core:** add ability to refresh public auth bridge tunnel ([9e1f456](https://github.com/EtienneLescot/n8n-manager/commit/9e1f456248e297f428cf5fa18dc125f9e7226a55))
+
 ## [0.6.2](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-core-v0.6.1...@n8n-as-code/n8n-manager-core-v0.6.2) (2026-05-06)
 
 
