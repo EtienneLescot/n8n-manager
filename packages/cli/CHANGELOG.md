@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.6.0...@n8n-as-code/n8n-manager-v0.6.1) (2026-05-06)
+
+
+### Bug Fixes
+
+* make public tunnel launches resilient on Windows ([58fa6e4](https://github.com/EtienneLescot/n8n-manager/commit/58fa6e49171a5b8c841a7fbe7a09f0f24285e193))
+
 ## [0.6.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.5.1...@n8n-as-code/n8n-manager-v0.6.0) (2026-05-05)
 
 
