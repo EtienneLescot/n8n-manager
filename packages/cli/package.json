@@ -25,7 +25,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@n8n-as-code/n8n-credentials-manager": "0.1.4",
-    "@n8n-as-code/n8n-manager-core": "0.7.0"
+    "@n8n-as-code/n8n-credentials-manager": "0.1.5",
+    "@n8n-as-code/n8n-manager-core": "0.7.1"
   }
 }
