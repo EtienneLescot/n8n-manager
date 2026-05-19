@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fssync from 'node:fs';
-import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +12,7 @@ import {
   type EffectiveN8nContext,
   type GlobalN8nInstance,
 } from './configuration-service.js';
+import { installCloudflaredIfNeeded as installCloudflaredBinaryIfNeeded } from './cloudflared.js';
 import {
   ensureLocalN8nAuthBridgeRunning,
   getManagedN8nAuthBridgeOpenUrl,
@@ -2130,87 +2130,12 @@ function resolveN8nManagerHomeForLogs(): string {
 }
 
 async function installCloudflaredIfNeeded(explicitBin?: string): Promise<string> {
-  if (explicitBin) return explicitBin;
-
-  const existing = await findCloudflaredBinary();
-  if (existing) return existing;
-
-  const destPath = getLocalCloudflaredBinPath();
-  await fs.mkdir(path.dirname(destPath), { recursive: true });
-  await downloadFile(resolveCloudflaredDownloadUrl(), destPath);
-  if (process.platform !== 'win32') {
-    await fs.chmod(destPath, 0o755);
-  }
-  return destPath;
-}
-
-async function findCloudflaredBinary(): Promise<string | undefined> {
-  try {
-    const cmd = process.platform === 'win32' ? 'where' : 'which';
-    const { stdout } = await execFileAsync(cmd, ['cloudflared'], { encoding: 'utf8' });
-    return stdout.trim().split(/\r?\n/)[0]?.trim() || undefined;
-  } catch {
-    // Not in PATH.
-  }
-
-  const local = getLocalCloudflaredBinPath();
-  return fssync.existsSync(local) ? local : undefined;
+  return installCloudflaredBinaryIfNeeded(getLocalCloudflaredBinPath(), explicitBin);
 }
 
 function getLocalCloudflaredBinPath(): string {
   const ext = process.platform === 'win32' ? '.exe' : '';
-  return path.join(os.homedir(), '.n8n-manager', 'bin', `cloudflared${ext}`);
-}
-
-function resolveCloudflaredDownloadUrl(): string {
-  if (process.platform === 'linux') {
-    if (process.arch === 'arm64') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64';
-    if (process.arch === 'arm') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm';
-    return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64';
-  }
-  if (process.platform === 'darwin') {
-    if (process.arch === 'arm64') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64';
-    return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64';
-  }
-  if (process.platform === 'win32') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe';
-  throw new Error(`Unsupported platform for automatic cloudflared installation: ${process.platform}/${process.arch}.`);
-}
-
-function downloadFile(url: string, destPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const follow = (currentUrl: string, depth: number) => {
-      if (depth > 10) {
-        reject(new Error('Too many redirects downloading cloudflared.'));
-        return;
-      }
-
-      https.get(currentUrl, (res) => {
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          follow(res.headers.location, depth + 1);
-          res.resume();
-          return;
-        }
-
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`Failed to download cloudflared: HTTP ${res.statusCode ?? 'unknown'}`));
-          res.resume();
-          return;
-        }
-
-        const tmpPath = `${destPath}.tmp`;
-        const file = fssync.createWriteStream(tmpPath);
-        res.pipe(file);
-        file.on('finish', () => {
-          file.close();
-          fssync.renameSync(tmpPath, destPath);
-          resolve();
-        });
-        file.on('error', reject);
-        res.on('error', reject);
-      }).on('error', reject);
-    };
-    follow(url, 0);
-  });
+  return path.join(resolveN8nManagerHomeForLogs(), 'bin', `cloudflared${ext}`);
 }
 
 function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {

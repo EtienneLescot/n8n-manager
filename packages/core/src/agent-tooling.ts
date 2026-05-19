@@ -1,12 +1,10 @@
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 
+import { installCloudflaredIfNeeded as installCloudflaredBinaryIfNeeded } from './cloudflared.js';
 import {
   N8nConfigurationService,
   resolveN8nManagerHome,
@@ -22,7 +20,6 @@ const LOCAL_BRIDGE_TUNNEL_TIMEOUT_MS = 30_000;
 const CLOUDFLARE_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/g;
 const WORKFLOW_EMBED_TYPE = 'workflow-embed';
 const TUNNEL_RETRY_COOLDOWN_MS = 10 * 60 * 1000;
-const execFileAsync = promisify(execFile);
 
 let serverPromise: Promise<void> | undefined;
 let server: Server | undefined;
@@ -966,85 +963,12 @@ function getBridgeTargetsPath(): string {
 }
 
 async function installCloudflaredIfNeeded(): Promise<string> {
-  const existing = await findCloudflaredBinary();
-  if (existing) return existing;
-
-  const destPath = getLocalCloudflaredBinPath();
-  await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
-  await downloadFile(resolveCloudflaredDownloadUrl(), destPath);
-  if (process.platform !== 'win32') {
-    await fs.promises.chmod(destPath, 0o755);
-  }
-  return destPath;
-}
-
-async function findCloudflaredBinary(): Promise<string | undefined> {
-  try {
-    const cmd = process.platform === 'win32' ? 'where' : 'which';
-    const { stdout } = await execFileAsync(cmd, ['cloudflared'], { encoding: 'utf8' });
-    return stdout.trim().split(/\r?\n/)[0]?.trim() || undefined;
-  } catch {
-    // Not in PATH.
-  }
-
-  const local = getLocalCloudflaredBinPath();
-  return fs.existsSync(local) ? local : undefined;
+  return installCloudflaredBinaryIfNeeded(getLocalCloudflaredBinPath());
 }
 
 function getLocalCloudflaredBinPath(): string {
   const ext = process.platform === 'win32' ? '.exe' : '';
   return path.join(resolveN8nManagerHome(), 'bin', `cloudflared${ext}`);
-}
-
-function resolveCloudflaredDownloadUrl(): string {
-  if (process.platform === 'linux') {
-    if (process.arch === 'arm64') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64';
-    if (process.arch === 'arm') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm';
-    return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64';
-  }
-  if (process.platform === 'darwin') {
-    if (process.arch === 'arm64') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64';
-    return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64';
-  }
-  if (process.platform === 'win32') return 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe';
-  throw new Error(`Unsupported platform for automatic cloudflared installation: ${process.platform}/${process.arch}.`);
-}
-
-function downloadFile(url: string, destPath: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const follow = (currentUrl: string, depth: number) => {
-      if (depth > 10) {
-        reject(new Error('Too many redirects downloading cloudflared.'));
-        return;
-      }
-
-      https.get(currentUrl, (res) => {
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          follow(res.headers.location, depth + 1);
-          res.resume();
-          return;
-        }
-
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`Failed to download cloudflared: HTTP ${res.statusCode ?? 'unknown'}`));
-          res.resume();
-          return;
-        }
-
-        const tmpPath = `${destPath}.tmp`;
-        const file = fs.createWriteStream(tmpPath);
-        res.pipe(file);
-        file.on('finish', () => {
-          file.close();
-          fs.renameSync(tmpPath, destPath);
-          resolve();
-        });
-        file.on('error', reject);
-        res.on('error', reject);
-      }).on('error', reject);
-    };
-    follow(url, 0);
-  });
 }
 
 function waitForTunnelPublicUrl(pid: number, logFile: string): Promise<string> {
