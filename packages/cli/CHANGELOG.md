@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.7.0...@n8n-as-code/n8n-manager-v0.7.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* update macOS cloudflared public URL handling ([4d0491e](https://github.com/EtienneLescot/n8n-manager/commit/4d0491e857af1da93c32b5f652e02f5ed56fa399))
+
 ## [0.7.0](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-manager-v0.6.2...@n8n-as-code/n8n-manager-v0.7.0) (2026-05-06)
 
 
