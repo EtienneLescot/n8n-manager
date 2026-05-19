@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-credentials-manager-v0.1.4...@n8n-as-code/n8n-credentials-manager-v0.1.5) (2026-05-19)
+
+
+### Bug Fixes
+
+* update macOS cloudflared public URL handling ([4d0491e](https://github.com/EtienneLescot/n8n-manager/commit/4d0491e857af1da93c32b5f652e02f5ed56fa399))
+
 ## [0.1.4](https://github.com/EtienneLescot/n8n-manager/compare/@n8n-as-code/n8n-credentials-manager-v0.1.3...@n8n-as-code/n8n-credentials-manager-v0.1.4) (2026-05-04)
 
 
